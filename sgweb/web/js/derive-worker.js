@@ -1,9 +1,7 @@
 // Derives formulas off the main thread. It gets the compiled sggeo module once, then for each job the
 // construction as .sgp text and the name of the target; the app stops a job by ending the worker.
 
-import { initSync, Doc } from "../pkg/sggeo.js";
-
-const LANGS = ["c", "rust", "js", "python", "mathematica", "maxima"];
+import { initSync, codeLanguages, Doc } from "../pkg/sggeo.js";
 
 function find(doc, kind, name) {
   const n = kind === "dim" ? doc.dimCount : doc.varCount;
@@ -36,7 +34,8 @@ self.onmessage = (ev) => {
       value: f.value,
       actual: f.actual,
       size: f.size,
-      code: Object.fromEntries(LANGS.map((l) => [l, f.code(l)])),
+      limits: f.limits.map((l) => l.plain),
+      code: Object.fromEntries(codeLanguages().map(([l]) => [l, f.code(l)])),
     };
     f.free();
     self.postMessage({ id: m.id, ok: true, f: out, ms: performance.now() - t0 });

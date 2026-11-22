@@ -23,7 +23,14 @@ From the source tree, `cargo run --release -p sgweb -- --open`.
 ## Docker
 
 `sgweb/Dockerfile` builds an image that holds nothing but a static sgweb binary (about 14 MB). It runs as an
-unprivileged user and serves on port 8080. Build and run it from the root of the repository:
+unprivileged user and serves on port 8080. Each release is on Docker Hub as `sycration/sgweb` (x86-64), tagged
+with its version and `latest`:
+
+```sh
+docker run -d --init -p 8080:8080 --read-only --cap-drop ALL sycration/sgweb
+```
+
+To build and run it from the root of the repository:
 
 ```sh
 docker compose -f sgweb/compose.yaml up -d            # build and start, on port 8080
@@ -72,7 +79,7 @@ another device still works, but online only and without installing. For that, se
   dimensions) or measured. Double-click or double-tap a dimension label to edit it.
 - **Result** shows the formula of the selected dimension or variable, derived in the background. A
   numeric or large result is searched further on its own; *Search longer* gives the search more time.
-  The formula copies as text, LaTeX, or code in C, Rust, JavaScript, Python, Mathematica or Maxima.
+  The formula copies as text, LaTeX, or code in C, Rust, JavaScript, Python, Mathematica, Maxima or SymPy.
 - **Quantities** lists the variables (free ones have a slider), functions, dimensions and
   constraints.
 - **Text** shows the construction in the [.sgp format](../docs/sgp-format.md). It can be edited there

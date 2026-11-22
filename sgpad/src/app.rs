@@ -163,6 +163,9 @@ pub struct FormulaView {
     pub level: u32,
     /// Complexity of the formula (0 without one).
     pub size: usize,
+    /// The conditions of the formula the construction is at the limit of,
+    /// as plain text (see `ops::Formula::limits`).
+    pub limits: Vec<String>,
     /// Document generation the formula was derived for.
     pub generation: u64,
 }
@@ -562,6 +565,7 @@ pub fn compute_formula(doc: &Document, target: Sel, level: u32, cancel: Option<&
         ms: 0.0,
         level,
         size: 0,
+        limits: vec![],
         generation: 0,
     };
     let t = match target {
@@ -587,6 +591,7 @@ pub fn compute_formula(doc: &Document, target: Sel, level: u32, cancel: Option<&
             fv.latex = f.latex;
             fv.exact = f.exact;
             fv.size = f.size;
+            fv.limits = f.limits.into_iter().map(|l| l.0).collect();
             fv.value = f.value;
             fv.actual = f.actual;
         }

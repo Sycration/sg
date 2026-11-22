@@ -16,5 +16,7 @@ pub mod js;
 pub mod model;
 pub(crate) mod nf;
 pub mod ops;
+#[cfg(feature = "python")]
+pub mod py;
 pub mod sketch;
 pub mod solver;

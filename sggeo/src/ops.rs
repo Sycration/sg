@@ -677,6 +677,26 @@ pub fn dim_value(doc: &Document, i: usize) -> Result<f64, String> {
     Ok(rounded_zero(doc, doc.sk.doc.measure_value(i)))
 }
 
+/// How precisely the measured value of dimension `i` (`dim_value`) is known:
+/// about how far it can be from the exact value of the construction. Where
+/// the construction is regular that is rounding, near 1e-13 of the value; at
+/// a double root (the foci of an ellipse with a = b, a tangency where it is
+/// a point of inflection) the solved positions are known only to about the
+/// square root of that, and so is the value. A display can round the value
+/// to it. Re-solves the construction a few times with its values moved.
+pub fn dim_uncertainty(doc: &Document, i: usize) -> Result<f64, String> {
+    dim(&doc.sk, i)?;
+    let d = &doc.sk.doc;
+    let probe = std::cell::RefCell::new(d.clone());
+    Ok(crate::derive::uncertainty_of(d, &|v| {
+        let mut p = probe.borrow_mut();
+        for (q, x) in p.params.iter_mut().zip(v) {
+            q.v = *x;
+        }
+        p.measure_value(i)
+    }))
+}
+
 /// Largest size, relative to the numbers of the document, of a value that
 /// counts as 0. Solved coordinates are exact to a few units in the last
 /// place, so a quantity that is 0 (the offset of a point from a line it lies
@@ -961,12 +981,22 @@ pub fn delete_var(doc: &mut Document, i: usize) -> Result<bool, String> {
     Ok(sk.delete(&[], &[], &[], &[i]))
 }
 
+/// The value of variable `i`: the value of a free variable, the solved value
+/// of a solved one, and for a variable defined by an expression the
+/// expression's value at the current solution (an error while the
+/// expression does not parse, such as after a variable it names is
+/// deleted).
 pub fn var_value(doc: &Document, i: usize) -> Result<f64, String> {
     let sk = &doc.sk;
     let v = var(sk, i)?;
     let p = &sk.doc.params[v.param];
-    // a free variable has exactly the value it was given; a solved or defined one is computed
-    Ok(if v.expr.is_empty() && p.locked { p.v } else { rounded_zero(doc, p.v) })
+    // a free variable has exactly the value it was given; a solved one is computed by the solver, a
+    // defined one from its expression at the current solution
+    if !v.expr.is_empty() {
+        let e = sk.doc.parse_expr(&v.expr, 0)?;
+        return Ok(rounded_zero(doc, sk.doc.eval_now(&e)));
+    }
+    Ok(if p.locked { p.v } else { rounded_zero(doc, p.v) })
 }
 
 /// The expression of variable `i`; empty for a value variable.
@@ -1690,6 +1720,24 @@ pub fn ent_conflict(doc: &Document, e: usize) -> Result<bool, String> {
     Ok(doc.sk.conflicts.contains(&Owner::Ent(e)))
 }
 
+/// The kinds of constraint by name, in the order of `ConKind::ALL` (the
+/// numbers of `SG_CON_*` in C).
+pub fn con_kinds() -> Vec<&'static str> {
+    ConKind::ALL.iter().map(|k| k.name()).collect()
+}
+
+/// The kinds of dimension by name, in the order of `DimType::ALL` (the
+/// numbers of `SG_DIM_*` in C).
+pub fn dim_kinds() -> Vec<&'static str> {
+    DimType::ALL.iter().map(|k| k.name()).collect()
+}
+
+/// The kinds of entity by name, in the order of `EntKind::ALL` (the numbers
+/// of `SG_ENT_*` in C).
+pub fn ent_kinds() -> Vec<&'static str> {
+    EntKind::ALL.iter().map(|k| k.name()).collect()
+}
+
 /// Kind of entity `e`.
 pub fn ent_kind(doc: &Document, e: usize) -> Result<EntKind, String> {
     let sk = &doc.sk;
@@ -1897,6 +1945,111 @@ pub fn ent_samples(doc: &Document, e: usize, min: [f64; 2], max: [f64; 2], px: f
     Ok(draw_polys(&sk.doc, e, &w))
 }
 
+/// The construction drawn as an SVG picture of `width` × `height` pixels
+/// (16 to 4096 each): its curves, its points with their names, and each
+/// dimension as `name = value` at its label (driving ones purple, measured
+/// ones green, angles in degrees), scaled to fit, with the axes in grey. For
+/// a notebook or a page; the apps draw their own pictures.
+pub fn to_svg(doc: &Document, width: f64, height: f64) -> Result<String, String> {
+    use std::fmt::Write;
+    if !((16.0..=4096.0).contains(&width) && (16.0..=4096.0).contains(&height)) {
+        return Err("the picture must be 16 to 4096 pixels wide and high".into());
+    }
+    let d = &doc.sk.doc;
+    let shown: Vec<usize> = (0..d.ents.len()).filter(|&e| d.ents[e].as_ref().is_some_and(|x| !x.hidden)).collect();
+    let dims: Vec<usize> = (0..d.dims.len()).filter(|&i| d.dims[i].is_some()).collect();
+    let label = |i: usize| -> [f64; 2] {
+        let (a, o) = (d.dim_anchor(&d.dims[i].as_ref().unwrap().kind), d.dims[i].as_ref().unwrap().off);
+        [a[0] + o[0], a[1] + o[1]]
+    };
+    // what has to be in view: the origin, the points, the circles and conics, the labels
+    let mut lo = [0.0f64; 2];
+    let mut hi = [0.0f64; 2];
+    let mut take = |p: [f64; 2], r: f64| {
+        if p.iter().all(|v| v.is_finite()) && r.is_finite() {
+            for k in 0..2 {
+                lo[k] = lo[k].min(p[k] - r);
+                hi[k] = hi[k].max(p[k] + r);
+            }
+        }
+    };
+    for &e in &shown {
+        match d.kind(e) {
+            Some(Ent::Point { .. }) => take(d.pval(e), 0.0),
+            Some(Ent::Circle { .. }) | Some(Ent::Arc { .. }) => {
+                let (c, r) = d.circ_val(e);
+                take(c, r.abs());
+            }
+            Some(Ent::Conic { c, a, b, .. }) => take(d.pval(*c), d.params[*a].v.abs().max(d.params[*b].v.abs())),
+            _ => {}
+        }
+    }
+    for &i in &dims {
+        take(label(i), 0.0);
+    }
+    // at least a unit square, with a margin of a tenth each side and 20 pixels for the labels
+    let (bw, bh) = ((hi[0] - lo[0]).max(1.0), (hi[1] - lo[1]).max(1.0));
+    let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+    let px = (bw * 1.2 / (width - 40.0)).max(bh * 1.2 / (height - 40.0));
+    let (half_w, half_h) = (width * px / 2.0, height * px / 2.0);
+    let w = Window::new([mid[0] - half_w, mid[1] - half_h], [mid[0] + half_w, mid[1] + half_h], px)?;
+    let at = |p: [f64; 2]| ((p[0] - w.min[0]) / px, (w.max[1] - p[1]) / px);
+    let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+
+    let mut out = String::new();
+    let _ = write!(out, r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="sans-serif" font-size="12">"#);
+    out.push_str(r#"<rect width="100%" height="100%" fill="white"/>"#);
+    let axes = [d.xaxis, d.yaxis];
+    for &e in shown.iter().filter(|&&e| !matches!(d.kind(e), Some(Ent::Point { .. }))) {
+        let (stroke, sw) = if axes.contains(&e) { ("#c8c8c8", 1.0) } else { ("#333333", 1.5) };
+        for poly in draw_polys(d, e, &w) {
+            let mut path = String::new();
+            for (k, p) in poly.iter().enumerate() {
+                let (x, y) = at(*p);
+                let _ = write!(path, "{}{x:.1} {y:.1}", if k == 0 { "M" } else { " L" });
+            }
+            let _ = write!(out, r#"<path d="{path}" fill="none" stroke="{stroke}" stroke-width="{sw}"/>"#);
+        }
+    }
+    for &e in shown.iter().filter(|&&e| matches!(d.kind(e), Some(Ent::Point { .. }))) {
+        let (x, y) = at(d.pval(e));
+        let _ = write!(out, r##"<circle cx="{x:.1}" cy="{y:.1}" r="2.5" fill="#333333"/>"##);
+        let name = &d.ents[e].as_ref().unwrap().name;
+        if !name.is_empty() {
+            let _ = write!(out, r##"<text x="{:.1}" y="{:.1}" fill="#333333">{}</text>"##, x + 5.0, y - 5.0, esc(name));
+        }
+    }
+    // the labels, each moved down a line until it clears those before it (about 7 pixels a character,
+    // 15 a line), outlined in white over the lines they cross
+    let mut placed: Vec<(f64, f64, f64)> = Vec::new();
+    for &i in &dims {
+        let x = d.dims[i].as_ref().unwrap();
+        let color = if x.driving { "#8e44ad" } else { "#2e7d32" };
+        let v = dim_value(doc, i)?;
+        let text = if x.kind.is_angle() { format!("{} = {}°", x.name, short_number(v.to_degrees())) } else { format!("{} = {}", x.name, short_number(v)) };
+        let ((ax, ay), (lx, mut ly)) = (at(d.dim_anchor(&x.kind)), at(label(i)));
+        let half = 3.5 * text.chars().count() as f64;
+        while placed.iter().any(|&(px, py, ph)| (px - lx).abs() < ph + half && (py - ly).abs() < 15.0) {
+            ly += 15.0;
+        }
+        placed.push((lx, ly, half));
+        let _ = write!(out, r#"<path d="M{ax:.1} {ay:.1} L{lx:.1} {ly:.1}" stroke="{color}" stroke-opacity="0.4" stroke-dasharray="3 3"/>"#);
+        let _ = write!(out, r#"<text x="{lx:.1}" y="{ly:.1}" fill="{color}" stroke="white" stroke-width="3" paint-order="stroke" text-anchor="middle" dominant-baseline="middle">{}</text>"#, esc(&text));
+    }
+    out.push_str("</svg>");
+    Ok(out)
+}
+
+/// `v` as the apps show it: up to 4 decimals.
+fn short_number(v: f64) -> String {
+    if !v.is_finite() {
+        return "—".into();
+    }
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".into() } else { s.into() }
+}
+
 // ------------------------------------------------------------ formulas
 
 pub use crate::expr::code::Lang;
@@ -1928,6 +2081,14 @@ pub struct Formula {
     pub actual: f64,
     /// Complexity of the formula: its number of operations and terms.
     pub size: usize,
+    /// The conditions for the formula to hold that the construction meets
+    /// only just, as plain text and LaTeX: a radicand of a square root that
+    /// is 0 here (`b1^2 - a1^2 ≥ 0`), an argument of `acos` or `asin` that is
+    /// ±1, an argument of `ln` that is 0. A little way past such a condition
+    /// the formula has no value or another branch holds (the foci of an
+    /// ellipse with a = b go onto the other axis when b passes a). Usually
+    /// empty.
+    pub limits: Vec<(String, String)>,
     /// The formula as code in each language of `Lang::ALL`; see [`formula_code`].
     code: [String; Lang::ALL.len()],
 }
@@ -1972,6 +2133,7 @@ pub fn derive(doc: &Document, t: Target, extra_ms: u64, cancel: Option<&Cancel>)
         latex_short: format!("{lhs} = {}", latex(&to_bx(&main, &nm))),
         defs: defs.iter().map(|(s, e)| (latex(&Bx::Sym(nm(*s))), latex(&to_bx(e, &nm)))).collect(),
         size: crate::expr::complexity(&f.expr),
+        limits: crate::formula::limits(&nd, &f.expr),
         name: f.name,
         plain: f.plain,
         latex: f.latex,
@@ -1988,9 +2150,18 @@ pub fn derive(doc: &Document, t: Target, extra_ms: u64, cancel: Option<&Cancel>)
 /// line, reading the other quantities from variables of their names (names
 /// are made into identifiers of the language, Greek letters spelled out).
 /// Angles are in radians. C needs `<math.h>`; the Python code imports
-/// `math` when it uses it.
+/// `math` when it uses it. The SymPy code declares the other quantities as
+/// real symbols, so the target holds a SymPy expression.
 pub fn formula_code(f: &Formula, lang: Lang) -> String {
     f.code[lang as usize].clone()
+}
+
+/// The languages of `formula_code`, in the order of `Lang::ALL` (the numbers
+/// of `SG_LANG_*` in C): each one's name, as `Lang::from_name` reads it, and
+/// its name to show (`js`, "JavaScript"). A client lists them from here, so
+/// a language added to sggeo reaches its menus.
+pub fn code_languages() -> Vec<(&'static str, &'static str)> {
+    Lang::ALL.iter().map(|l| (l.name(), l.label())).collect()
 }
 
 // ------------------------------------------------------------ typesetting

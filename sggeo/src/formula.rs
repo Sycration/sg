@@ -129,6 +129,11 @@ pub fn derive_formula(doc: &Doc, t: Target, extra_ms: u64) -> Result<Formula, St
     let doc = numeric_doc(doc, t);
     let (name, e, is_angle) = target_expr(&doc, t)?;
     let d = derive::derive_harder(&doc, &e, extra_ms)?;
+    // a measured dimension's own measurement (an angle more exactly than its expression gives it)
+    let actual = match t {
+        Target::Dim(i) if doc.dims[i].as_ref().is_some_and(|d| !d.driving) => doc.measure_value(i),
+        _ => d.actual,
+    };
     let names = doc.param_names();
     let full = to_bx(&d.expr, &|s| sym_name(&names, s));
     Ok(Formula {
@@ -138,7 +143,100 @@ pub fn derive_formula(doc: &Doc, t: Target, extra_ms: u64) -> Result<Formula, St
         exact: d.exact,
         is_angle,
         value: d.value,
-        actual: d.actual,
+        actual,
         expr: d.expr,
     })
+}
+
+/// The conditions for formula `e` to hold that the current configuration of
+/// `doc` meets only just, as plain text and LaTeX (`b1^2 - a1^2 ≥ 0`): the
+/// radicand of an even root that is 0 here, the argument of `acos` or `asin`
+/// that is ±1, the argument of `ln` that is 0. Where such a condition fails,
+/// a little way off, the formula has no value or another branch holds, as
+/// the foci of an ellipse with a = b go onto the other axis when b passes a.
+/// A condition that is 0 here but holds all around (a square) is not one.
+pub fn limits(doc: &Doc, e: &Expr) -> Vec<(String, String)> {
+    use crate::expr::{Fun, Node, add, eval, neg, one, sym_set};
+    // each condition as an expression that must not be negative, with how it reads
+    fn walk(e: &Expr, out: &mut Vec<(Expr, Expr, &'static str, &'static str)>) {
+        match e.node() {
+            Node::Pow(b, x) => {
+                if x.as_rat().is_some_and(|r| r.d % 2 == 0) {
+                    out.push((b.clone(), b.clone(), "≥ 0", "\\geq 0"));
+                }
+                walk(b, out);
+                walk(x, out);
+            }
+            Node::Fun(f, u) => {
+                match f {
+                    Fun::Acos | Fun::Asin => {
+                        out.push((add(vec![one(), neg(u.clone())]), u.clone(), "≤ 1", "\\leq 1"));
+                        out.push((add(vec![u.clone(), one()]), u.clone(), "≥ -1", "\\geq -1"));
+                    }
+                    Fun::Ln => out.push((u.clone(), u.clone(), "> 0", "> 0")),
+                    _ => {}
+                }
+                walk(u, out);
+            }
+            Node::Add(v) | Node::Mul(v) => v.iter().for_each(|x| walk(x, out)),
+            Node::Atan2(a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            Node::Num(_) | Node::Pi | Node::Sym(_) => {}
+        }
+    }
+    // the size of the parts of `e`, which its rounding is relative to
+    fn magnitude(e: &Expr, at: &dyn Fn(u32) -> f64) -> f64 {
+        match e.node() {
+            Node::Add(v) => v.iter().map(|x| magnitude(x, at)).sum(),
+            Node::Mul(v) => v.iter().map(|x| magnitude(x, at)).product(),
+            _ => eval(e, at).abs(),
+        }
+    }
+    let mut conds = Vec::new();
+    walk(e, &mut conds);
+    let vals: Vec<f64> = doc.params.iter().map(|p| p.v).collect();
+    let here = |s: u32| vals.get(s as usize).copied().unwrap_or(f64::NAN);
+    let syms: Vec<u32> = {
+        let mut v: Vec<u32> = sym_set(e).into_iter().collect();
+        v.sort();
+        v
+    };
+    let size = vals.iter().map(|x| x.abs()).filter(|x| x.is_finite()).fold(1.0, f64::max);
+    // the quantities moved by 1% each, up or down by a hash of the quantity and the trial (splitmix64)
+    let moved: Vec<Vec<f64>> = (0..16u64)
+        .map(|k| {
+            let mut v = vals.clone();
+            for &s in &syms {
+                let mut h = (s as u64) << 8 ^ k;
+                h = (h ^ h >> 30).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                h = (h ^ h >> 27).wrapping_mul(0x94d0_49bb_1331_11eb);
+                if let Some(x) = v.get_mut(s as usize) {
+                    let step = if *x == 0.0 { 1e-2 * size } else { 1e-2 * x.abs() };
+                    *x += if (h ^ h >> 31) & 1 == 0 { step } else { -step };
+                }
+            }
+            v
+        })
+        .collect();
+    let names = doc.param_names();
+    let nm = |s: u32| sym_name(&names, s);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (g, shown, rel_plain, rel_latex) in conds {
+        let (v, m) = (eval(&g, &here), magnitude(&g, &here));
+        if !(v.is_finite() && v.abs() <= 1e-9 * m.max(f64::MIN_POSITIVE)) {
+            continue;
+        }
+        let fails = moved.iter().any(|w| {
+            let at = |s: u32| w.get(s as usize).copied().unwrap_or(f64::NAN);
+            eval(&g, &at) < -1e-9 * magnitude(&g, &at)
+        });
+        let bx = to_bx(&shown, &nm);
+        let item = (format!("{} {rel_plain}", plain(&bx)), format!("{} {rel_latex}", latex(&bx)));
+        if fails && !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
 }

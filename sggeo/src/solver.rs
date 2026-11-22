@@ -10,6 +10,9 @@ pub struct CEq {
     pub f: Code,
     pub jac: Vec<(usize, Code)>,
     pub owner: Owner,
+    /// Linear in its one unknown (a driving value on a single parameter,
+    /// a = 3): solved exactly on its own before the rest (see `Sys::pin`).
+    pub pin: bool,
 }
 
 pub struct DragEq {
@@ -100,6 +103,10 @@ struct Comp {
     eqs: Vec<usize>,
     drags: Vec<usize>,
     cols: Vec<usize>,
+    /// The columns the size of the component is measured over: its own and
+    /// the pinned ones its equations name (a point on an ellipse with a
+    /// pinned size is as large as the ellipse).
+    sized: Vec<usize>,
 }
 
 /// Residual tolerance, relative to the equation's scale (see `Sys::eq_scale`).
@@ -111,7 +118,12 @@ impl Sys {
         let mut eqs = Vec::new();
         for (e, o) in eqns {
             let (f, jac) = compile_eq(e, &col);
-            eqs.push(CEq { f, jac, owner: *o });
+            // the derivative of a linear equation names no unknown
+            let pin = match jac.as_slice() {
+                [(c, _)] => sym_set(&diff(e, unknowns[*c] as u32)).iter().all(|s| !col.contains_key(&(*s as usize))),
+                _ => false,
+            };
+            eqs.push(CEq { f, jac, owner: *o, pin });
         }
         Sys { eqs, unknowns, col }
     }
@@ -121,7 +133,10 @@ impl Sys {
         DragEq { f, jac }
     }
 
-    fn components(&self, drags: &[DragEq]) -> Vec<Comp> {
+    /// The connected components of the equations and drag equations over
+    /// the unknowns, leaving out the `pinned` columns (constants by then).
+    /// An equation on pinned columns only is in none.
+    fn components(&self, drags: &[DragEq], pinned: &[bool]) -> Vec<Comp> {
         let n = self.unknowns.len();
         let mut parent: Vec<usize> = (0..n).collect();
         fn find(p: &mut [usize], mut i: usize) -> usize {
@@ -131,11 +146,12 @@ impl Sys {
             }
             i
         }
+        let open = |jac: &[(usize, Code)]| jac.iter().map(|(c, _)| *c).filter(|&c| !pinned[c]).collect::<Vec<_>>();
         let join = |jac: &[(usize, Code)], parent: &mut Vec<usize>| {
-            if let Some((c0, _)) = jac.first() {
-                let r0 = find(parent, *c0);
-                for (c, _) in &jac[1..] {
-                    let r = find(parent, *c);
+            if let Some((&c0, rest)) = open(jac).split_first() {
+                let r0 = find(parent, c0);
+                for &c in rest {
+                    let r = find(parent, c);
                     parent[r] = r0;
                 }
             }
@@ -147,19 +163,27 @@ impl Sys {
             join(&d.jac, &mut parent);
         }
         let mut map: HashMap<usize, Comp> = HashMap::new();
-        for c in 0..n {
+        for c in (0..n).filter(|&c| !pinned[c]) {
             let r = find(&mut parent, c);
-            map.entry(r).or_insert_with(|| Comp { eqs: vec![], drags: vec![], cols: vec![] }).cols.push(c);
+            let comp = map.entry(r).or_insert_with(|| Comp { eqs: vec![], drags: vec![], cols: vec![], sized: vec![] });
+            comp.cols.push(c);
+            comp.sized.push(c);
         }
         for (i, e) in self.eqs.iter().enumerate() {
-            if let Some((c, _)) = e.jac.first() {
-                let r = find(&mut parent, *c);
-                map.get_mut(&r).unwrap().eqs.push(i);
+            if let Some(&c) = open(&e.jac).first() {
+                let r = find(&mut parent, c);
+                let comp = map.get_mut(&r).unwrap();
+                comp.eqs.push(i);
+                for &(k, _) in &e.jac {
+                    if pinned[k] && !comp.sized.contains(&k) {
+                        comp.sized.push(k);
+                    }
+                }
             }
         }
         for (i, d) in drags.iter().enumerate() {
-            if let Some((c, _)) = d.jac.first() {
-                let r = find(&mut parent, *c);
+            if let Some(&c) = open(&d.jac).first() {
+                let r = find(&mut parent, c);
                 map.get_mut(&r).unwrap().drags.push(i);
             }
         }
@@ -221,10 +245,89 @@ impl Sys {
         self.scaled_residuals(vals).into_iter().enumerate().filter(|(_, r)| !(*r < 1e-6)).map(|(k, _)| self.eqs[k].owner).collect()
     }
 
+    /// Solves the equations that are linear in their one unknown exactly (a
+    /// driving value on a single parameter) and returns the columns they fix,
+    /// and those of them it changed.
+    fn pin(&self, vals: &mut [f64], target: [f64; 2]) -> (Vec<bool>, Vec<bool>) {
+        let mut pinned = vec![false; self.unknowns.len()];
+        let mut moved = vec![false; self.unknowns.len()];
+        let mut st = Vec::new();
+        for e in self.eqs.iter().filter(|e| e.pin) {
+            let (c, slope) = &e.jac[0];
+            if pinned[*c] {
+                continue;
+            }
+            let p = self.unknowns[*c];
+            let old = vals[p];
+            // a second step takes up the rounding of the first
+            for _ in 0..2 {
+                let (f, k) = {
+                    let ld = loader(vals, target);
+                    (e.f.eval(&ld, &mut st), slope.eval(&ld, &mut st))
+                };
+                vals[p] -= f / k;
+            }
+            if vals[p].is_finite() {
+                pinned[*c] = true;
+                moved[*c] = vals[p] != old;
+            } else {
+                vals[p] = old;
+            }
+        }
+        (pinned, moved)
+    }
+
     /// Solves all constraints, pulling drag equations toward zero.
     /// Returns false when the constraints could not be satisfied.
     pub fn solve(&self, vals: &mut [f64], drags: &[DragEq], target: [f64; 2]) -> bool {
-        let comps = self.components(drags);
+        let ok = self.solve_components(vals, drags, target);
+        if ok {
+            self.refine(vals, target);
+        }
+        ok
+    }
+
+    /// Ends a solution: the Newton steps of a component move every unknown in
+    /// it, so a driving value on a single parameter (a = 3) is only met to
+    /// within rounding, and from a double root (the foci of an ellipse with
+    /// a = b, on |a² − b²|) an error of ε in it comes back as √ε. Such values
+    /// are made exact (`pin`) and the components that depend on one that
+    /// changed are solved again with them fixed, from where they are. The
+    /// result is kept when every one of them solves.
+    fn refine(&self, vals: &mut [f64], target: [f64; 2]) {
+        let before = vals.to_vec();
+        let (pinned, moved) = self.pin(vals, target);
+        if !moved.contains(&true) {
+            return;
+        }
+        for c in self.components(&[], &pinned) {
+            if c.eqs.is_empty() || !c.sized.iter().any(|&k| moved[k]) {
+                continue;
+            }
+            let start: Vec<f64> = c.cols.iter().map(|&k| vals[self.unknowns[k]]).collect();
+            if !self.project(vals, &c, target) && !self.project_nudged(vals, &c, target, &start) {
+                vals.copy_from_slice(&before);
+                return;
+            }
+        }
+    }
+
+    /// Projects component `c` from a little way off `start`: from a double root
+    /// (the foci of an ellipse with a = b) the gradients give no direction to
+    /// leave it by.
+    fn project_nudged(&self, vals: &mut [f64], c: &Comp, target: [f64; 2], start: &[f64]) -> bool {
+        for (j, &k) in c.cols.iter().enumerate() {
+            vals[self.unknowns[k]] = start[j];
+        }
+        let l = self.length_scale(vals, c.sized.iter().copied());
+        for (j, &k) in c.cols.iter().enumerate() {
+            vals[self.unknowns[k]] = start[j] + 1e-4 * l * ((k as f64 + 1.0) * 78.233).sin();
+        }
+        self.project(vals, c, target)
+    }
+
+    fn solve_components(&self, vals: &mut [f64], drags: &[DragEq], target: [f64; 2]) -> bool {
+        let comps = self.components(drags, &vec![false; self.unknowns.len()]);
         let mut ok = true;
         let mut st = Vec::new();
         for c in comps {
@@ -232,7 +335,7 @@ impl Sys {
                 continue;
             }
             let need = !c.drags.is_empty() || {
-                let scales = self.eq_scales(&c.eqs, vals, target, c.cols.iter().copied());
+                let scales = self.eq_scales(&c.eqs, vals, target, c.sized.iter().copied());
                 let ld = loader(vals, target);
                 c.eqs.iter().zip(&scales).any(|(&i, s)| !(self.eqs[i].f.eval(&ld, &mut st).abs() / s < TOL))
             };
@@ -250,14 +353,7 @@ impl Sys {
                 good = self.project(vals, &c, target);
             }
             if !good {
-                // from a double root (the foci of an ellipse with a = b) the
-                // gradients give no direction to leave it by: start a little
-                // way off
-                let l = backup.iter().map(|x| x.abs()).filter(|x| x.is_finite()).fold(1e-9, f64::max);
-                for (j, &k) in c.cols.iter().enumerate() {
-                    vals[self.unknowns[k]] = backup[j] + 1e-4 * l * ((k as f64 + 1.0) * 78.233).sin();
-                }
-                good = self.project(vals, &c, target);
+                good = self.project_nudged(vals, &c, target, &backup);
             }
             if !good {
                 for (j, &k) in c.cols.iter().enumerate() {
@@ -303,7 +399,7 @@ impl Sys {
             return;
         }
         let cost0 = cost;
-        let l = self.length_scale(vals, c.cols.iter().copied());
+        let l = self.length_scale(vals, c.sized.iter().copied());
         for _ in 0..iters {
             jm.iter_mut().for_each(|x| *x = 0.0);
             {
@@ -384,13 +480,13 @@ impl Sys {
         let mut st = Vec::new();
         let mut r = vec![0.0; m];
         // the equations' scales at the start (mx is relative to them)
-        let scales = self.eq_scales(&c.eqs, vals, target, c.cols.iter().copied());
+        let scales = self.eq_scales(&c.eqs, vals, target, c.sized.iter().copied());
         // far from unit size, length equations (|AB|² − d², scale ~ size²)
         // and angle equations (scale ~ 1) differ by orders of magnitude, and
         // the damping drowns the small rows: then the Newton rows are scaled
         // to their equations' scales. At ordinary sizes they are not, which
         // finds the nearer solution after a large move.
-        let size = self.length_scale(vals, c.cols.iter().copied());
+        let size = self.length_scale(vals, c.sized.iter().copied());
         let rows: Vec<f64> = if (1e-2..=1e2).contains(&size) { vec![1.0; m] } else { scales.clone() };
         let eval_r = |vals: &[f64], r: &mut [f64], st: &mut Vec<f64>| -> (f64, f64) {
             let ld = loader(vals, target);
@@ -453,18 +549,23 @@ impl Sys {
             let ys: Vec<f64> = r.iter().zip(&rows).map(|(x, s)| x / s).collect();
             let mut y = ys.clone();
             let mut ok = false;
-            let mut damp = mu;
-            for _ in 0..8 {
+            // a uniform damping, growing while the system is singular; when
+            // polishing, first each row damped by its own size: at a double
+            // root (the foci of an ellipse with a = b) its rows shrink with the
+            // distance to it, and a damping by the average size would stop them
+            // at √ε short of it beside the rows of other equations
+            let mut damp = if polish > 0 { None } else { Some(mu) };
+            for _ in 0..9 {
                 let mut a = mm.clone();
                 for i in 0..m {
-                    a[i * m + i] += damp;
+                    a[i * m + i] += damp.unwrap_or(1e-16 * mm[i * m + i] + 1e-16 * mu);
                 }
                 y.copy_from_slice(&ys);
                 if spd_solve(&mut a, m, &mut y) {
                     ok = true;
                     break;
                 }
-                damp = damp * 1e3 + 1e-12 * (trace / m as f64);
+                damp = Some(damp.map_or(mu, |d| d * 1e3 + 1e-12 * (trace / m as f64)));
             }
             if !ok {
                 return false;
@@ -509,7 +610,7 @@ impl Sys {
         let n = self.unknowns.len();
         let m = self.eqs.len();
         let mut free = vec![true; n];
-        let comps = self.components(&[]);
+        let comps = self.components(&[], &vec![false; n]);
         let mut st = Vec::new();
         let ld = loader(vals, [0.0; 2]);
         let mut dof = 0;
@@ -604,7 +705,8 @@ impl Sys {
             let mut pinned = vec![false; cn];
             if cm > pivots.len() {
                 for j in (0..cn).filter(|&j| !is_pivot[j]) {
-                    let held = Comp { eqs: c.eqs.clone(), drags: vec![], cols: c.cols.iter().copied().filter(|&k| k != c.cols[j]).collect() };
+                    let cols: Vec<usize> = c.cols.iter().copied().filter(|&k| k != c.cols[j]).collect();
+                    let held = Comp { eqs: c.eqs.clone(), drags: vec![], sized: cols.clone(), cols };
                     let mut v = vals.to_vec();
                     v[self.unknowns[c.cols[j]]] += 2e-2 * l;
                     self.project(&mut v, &held, [0.0; 2]);

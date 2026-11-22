@@ -64,6 +64,14 @@ typedef struct SgDef {
   char *latex;
 } SgDef;
 
+// A condition of a formula (see `SgFormula.limits`).
+typedef struct SgLimit {
+  // As plain text, such as `b1^2 - a1^2 ≥ 0`.
+  char *plain;
+  // As LaTeX.
+  char *latex;
+} SgLimit;
+
 // A derived formula. Released with `sg_formula_free`.
 typedef struct SgFormula {
   // Name of the target.
@@ -90,6 +98,14 @@ typedef struct SgFormula {
   size_t n_defs;
   // Complexity of the formula: its number of operations and terms.
   size_t size;
+  // The `n_limits` conditions for the formula to hold that the
+  // construction meets only just: a radicand of a square root that is 0
+  // here (`b1^2 - a1^2 ≥ 0`), an argument of `acos` or `asin` that is ±1,
+  // an argument of `ln` that is 0. A little way past such a condition the
+  // formula has no value or another branch holds. Usually none.
+  struct SgLimit *limits;
+  // Number of entries in `limits`.
+  size_t n_limits;
 } SgFormula;
 
 // Kind of quantity passed to `sg_derive`.
@@ -130,6 +146,10 @@ typedef uint32_t SgLang;
 
 // Maxima.
 #define SG_LANG_MAXIMA 5
+
+// Python 3 with SymPy: a symbolic expression in symbols for the other
+// quantities.
+#define SG_LANG_SYMPY 6
 
 // Points a and b coincide.
 #define SG_CON_COINCIDENT 0
@@ -285,6 +305,16 @@ struct SgDoc *sg_doc_from_sgp(const char *text);
 // # Safety
 // `doc` is NULL or a document from this library.
 char *sg_doc_to_sgp(const struct SgDoc *doc);
+
+// The construction drawn as an SVG picture of `width` × `height` pixels
+// (16 to 4096 each): its curves, its points with their names, and each
+// dimension as `name = value` at its label (driving ones purple, measured
+// ones green, angles in degrees), scaled to fit, with the axes in grey. NULL
+// on error. Release the string with `sg_string_free`.
+//
+// # Safety
+// `doc` is NULL or a document from this library.
+char *sg_doc_to_svg(const struct SgDoc *doc, double width, double height);
 
 // Releases a document. NULL is ignored.
 //
@@ -1210,6 +1240,17 @@ char *sg_doc_dim_name(const struct SgDoc *doc, size_t i);
 // `doc` is NULL or a document from this library.
 double sg_doc_dim_value(const struct SgDoc *doc, size_t i);
 
+// How precisely the measured value of dimension `i` (`sg_doc_dim_value`)
+// is known: about how far it can be from the exact value of the
+// construction. Near 1e-13 of the value where the construction is regular;
+// at a double root (the foci of an ellipse with a = b) about the square root
+// of that. A display can round the value to it. NaN for an empty slot or a
+// bad index.
+//
+// # Safety
+// `doc` is NULL or a document from this library.
+double sg_doc_dim_uncertainty(const struct SgDoc *doc, size_t i);
+
 // 1 when dimension `i` is driving, 0 when it is a reference dimension, -1 on error.
 //
 // # Safety
@@ -1310,7 +1351,9 @@ size_t sg_doc_var_count(const struct SgDoc *doc);
 // `doc` is NULL or a document from this library.
 char *sg_doc_var_name(const struct SgDoc *doc, size_t i);
 
-// Value of variable `i`, or NaN for an empty slot or a bad index.
+// Value of variable `i` (the value of its expression for a defined
+// variable), or NaN for an empty slot, a bad index or an expression that
+// does not parse.
 //
 // # Safety
 // `doc` is NULL or a document from this library.
@@ -1373,12 +1416,39 @@ struct SgFormula *sg_derive(const struct SgDoc *doc,
 // after the target, one per line, reading the other quantities from
 // variables of their names (names are made into identifiers of the
 // language, Greek letters spelled out). Angles are in radians. C needs
-// `<math.h>`; the Python code imports `math` when it uses it. Release the
-// string with `sg_string_free`.
+// `<math.h>`; the Python code imports `math` when it uses it. The SymPy
+// code declares the other quantities as real symbols, so the target holds
+// a SymPy expression. Release the string with `sg_string_free`.
 //
 // # Safety
 // `f` is NULL or a formula from `sg_derive`, not yet released.
 char *sg_formula_code(const struct SgFormula *f, SgLang lang);
+
+// The name of language `lang` (`SG_LANG_*`), as `Formula.code` reads it in
+// JavaScript and Python ("js"), or NULL past the last language: a client
+// lists the languages with `lang` from 0 until NULL, so a language added to
+// sggeo reaches its menus. Release the string with `sg_string_free`.
+char *sg_lang_name(SgLang lang);
+
+// The name to show of language `lang` (`SG_LANG_*`): "JavaScript" for
+// `SG_LANG_JS`; NULL past the last language. Release the string with
+// `sg_string_free`.
+char *sg_lang_label(SgLang lang);
+
+// The name of constraint kind `kind` (`SG_CON_*`), as `constrain` reads it
+// in JavaScript and Python ("on_curve"), or NULL past the last kind.
+// Release the string with `sg_string_free`.
+char *sg_con_kind_name(SgCon kind);
+
+// The name of dimension kind `kind` (`SG_DIM_*`), as `add_dim` reads it in
+// JavaScript and Python ("point_line"), or NULL past the last kind. Release
+// the string with `sg_string_free`.
+char *sg_dim_kind_name(SgDim kind);
+
+// The name of entity kind `kind` (`SG_ENT_*`), as `ent_kind` gives it in
+// JavaScript and Python ("circle"), or NULL past the last kind. Release the
+// string with `sg_string_free`.
+char *sg_ent_kind_name(SgEnt kind);
 
 // Releases a formula. NULL is ignored.
 //

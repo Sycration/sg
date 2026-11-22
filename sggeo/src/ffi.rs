@@ -46,6 +46,9 @@ pub const SG_LANG_PYTHON: SgLang = 3;
 pub const SG_LANG_MATHEMATICA: SgLang = 4;
 /// Maxima.
 pub const SG_LANG_MAXIMA: SgLang = 5;
+/// Python 3 with SymPy: a symbolic expression in symbols for the other
+/// quantities.
+pub const SG_LANG_SYMPY: SgLang = 6;
 
 /// Constraint kind passed to `sg_doc_constrain`, with its arguments a and b.
 pub type SgCon = u32;
@@ -180,6 +183,23 @@ pub struct SgFormula {
     pub n_defs: usize,
     /// Complexity of the formula: its number of operations and terms.
     pub size: usize,
+    /// The `n_limits` conditions for the formula to hold that the
+    /// construction meets only just: a radicand of a square root that is 0
+    /// here (`b1^2 - a1^2 ≥ 0`), an argument of `acos` or `asin` that is ±1,
+    /// an argument of `ln` that is 0. A little way past such a condition the
+    /// formula has no value or another branch holds. Usually none.
+    pub limits: *mut SgLimit,
+    /// Number of entries in `limits`.
+    pub n_limits: usize,
+}
+
+/// A condition of a formula (see `SgFormula.limits`).
+#[repr(C)]
+pub struct SgLimit {
+    /// As plain text, such as `b1^2 - a1^2 ≥ 0`.
+    pub plain: *mut c_char,
+    /// As LaTeX.
+    pub latex: *mut c_char,
 }
 
 /// A subexpression of a formula.
@@ -364,6 +384,19 @@ pub unsafe extern "C" fn sg_doc_from_sgp(text: *const c_char) -> *mut SgDoc {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sg_doc_to_sgp(doc: *const SgDoc) -> *mut c_char {
     guard(ptr::null_mut(), || Ok(out_str(ops::to_sgp(unsafe { doc_ref(doc) }?)?)))
+}
+
+/// The construction drawn as an SVG picture of `width` × `height` pixels
+/// (16 to 4096 each): its curves, its points with their names, and each
+/// dimension as `name = value` at its label (driving ones purple, measured
+/// ones green, angles in degrees), scaled to fit, with the axes in grey. NULL
+/// on error. Release the string with `sg_string_free`.
+///
+/// # Safety
+/// `doc` is NULL or a document from this library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sg_doc_to_svg(doc: *const SgDoc, width: f64, height: f64) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(out_str(ops::to_svg(unsafe { doc_ref(doc) }?, width, height)?)))
 }
 
 /// Releases a document. NULL is ignored.
@@ -1811,6 +1844,20 @@ pub unsafe extern "C" fn sg_doc_dim_expr(doc: *const SgDoc, i: usize) -> *mut c_
     guard(ptr::null_mut(), || Ok(out_str(ops::dim_expr(unsafe { doc_ref(doc) }?, i)?)))
 }
 
+/// How precisely the measured value of dimension `i` (`sg_doc_dim_value`)
+/// is known: about how far it can be from the exact value of the
+/// construction. Near 1e-13 of the value where the construction is regular;
+/// at a double root (the foci of an ellipse with a = b) about the square root
+/// of that. A display can round the value to it. NaN for an empty slot or a
+/// bad index.
+///
+/// # Safety
+/// `doc` is NULL or a document from this library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sg_doc_dim_uncertainty(doc: *const SgDoc, i: usize) -> f64 {
+    guard(f64::NAN, || ops::dim_uncertainty(unsafe { doc_ref(doc) }?, i))
+}
+
 /// The value dimension `i` is set to (radians for angles): for a driving
 /// dimension the value it drives toward, which differs from
 /// `sg_doc_dim_value` while the constraints conflict; for a reference
@@ -1884,7 +1931,9 @@ pub unsafe extern "C" fn sg_doc_var_name(doc: *const SgDoc, i: usize) -> *mut c_
     })
 }
 
-/// Value of variable `i`, or NaN for an empty slot or a bad index.
+/// Value of variable `i` (the value of its expression for a defined
+/// variable), or NaN for an empty slot, a bad index or an expression that
+/// does not parse.
 ///
 /// # Safety
 /// `doc` is NULL or a document from this library.
@@ -1975,6 +2024,8 @@ pub unsafe extern "C" fn sg_derive(doc: *const SgDoc, kind: SgTarget, index: usi
         let f = src.clone();
         let defs: Box<[SgDef]> = f.defs.into_iter().map(|(n, l)| SgDef { name: out_str(n), latex: out_str(l) }).collect();
         let n_defs = defs.len();
+        let limits: Box<[SgLimit]> = f.limits.into_iter().map(|(p, l)| SgLimit { plain: out_str(p), latex: out_str(l) }).collect();
+        let n_limits = limits.len();
         let b = Box::into_raw(Box::new(FormulaBox {
             f: SgFormula {
                 name: out_str(f.name),
@@ -1988,6 +2039,8 @@ pub unsafe extern "C" fn sg_derive(doc: *const SgDoc, kind: SgTarget, index: usi
                 defs: Box::into_raw(defs) as *mut SgDef,
                 n_defs,
                 size: f.size,
+                limits: Box::into_raw(limits) as *mut SgLimit,
+                n_limits,
             },
             src,
         }));
@@ -2001,8 +2054,9 @@ pub unsafe extern "C" fn sg_derive(doc: *const SgDoc, kind: SgTarget, index: usi
 /// after the target, one per line, reading the other quantities from
 /// variables of their names (names are made into identifiers of the
 /// language, Greek letters spelled out). Angles are in radians. C needs
-/// `<math.h>`; the Python code imports `math` when it uses it. Release the
-/// string with `sg_string_free`.
+/// `<math.h>`; the Python code imports `math` when it uses it. The SymPy
+/// code declares the other quantities as real symbols, so the target holds
+/// a SymPy expression. Release the string with `sg_string_free`.
 ///
 /// # Safety
 /// `f` is NULL or a formula from `sg_derive`, not yet released.
@@ -2012,6 +2066,47 @@ pub unsafe extern "C" fn sg_formula_code(f: *const SgFormula, lang: SgLang) -> *
         let b = unsafe { f.cast::<FormulaBox>().as_ref() }.ok_or("null formula")?;
         Ok(out_str(ops::formula_code(&b.src, Lang::from_index(lang)?)))
     })
+}
+
+/// The name of language `lang` (`SG_LANG_*`), as `Formula.code` reads it in
+/// JavaScript and Python ("js"), or NULL past the last language: a client
+/// lists the languages with `lang` from 0 until NULL, so a language added to
+/// sggeo reaches its menus. Release the string with `sg_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sg_lang_name(lang: SgLang) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(ops::code_languages().get(lang as usize).map_or(ptr::null_mut(), |l| out_str(l.0.into()))))
+}
+
+/// The name to show of language `lang` (`SG_LANG_*`): "JavaScript" for
+/// `SG_LANG_JS`; NULL past the last language. Release the string with
+/// `sg_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sg_lang_label(lang: SgLang) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(ops::code_languages().get(lang as usize).map_or(ptr::null_mut(), |l| out_str(l.1.into()))))
+}
+
+/// The name of constraint kind `kind` (`SG_CON_*`), as `constrain` reads it
+/// in JavaScript and Python ("on_curve"), or NULL past the last kind.
+/// Release the string with `sg_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sg_con_kind_name(kind: SgCon) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(ops::con_kinds().get(kind as usize).map_or(ptr::null_mut(), |k| out_str((*k).into()))))
+}
+
+/// The name of dimension kind `kind` (`SG_DIM_*`), as `add_dim` reads it in
+/// JavaScript and Python ("point_line"), or NULL past the last kind. Release
+/// the string with `sg_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sg_dim_kind_name(kind: SgDim) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(ops::dim_kinds().get(kind as usize).map_or(ptr::null_mut(), |k| out_str((*k).into()))))
+}
+
+/// The name of entity kind `kind` (`SG_ENT_*`), as `ent_kind` gives it in
+/// JavaScript and Python ("circle"), or NULL past the last kind. Release the
+/// string with `sg_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sg_ent_kind_name(kind: SgEnt) -> *mut c_char {
+    guard(ptr::null_mut(), || Ok(ops::ent_kinds().get(kind as usize).map_or(ptr::null_mut(), |k| out_str((*k).into()))))
 }
 
 /// Releases a formula. NULL is ignored.
@@ -2032,6 +2127,13 @@ pub unsafe extern "C" fn sg_formula_free(f: *mut SgFormula) {
         unsafe {
             sg_string_free(d.name);
             sg_string_free(d.latex);
+        }
+    }
+    let limits = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(f.limits, f.n_limits)) };
+    for l in limits.iter() {
+        unsafe {
+            sg_string_free(l.plain);
+            sg_string_free(l.latex);
         }
     }
 }

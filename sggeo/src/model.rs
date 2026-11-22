@@ -1031,7 +1031,18 @@ impl Doc {
         }
     }
 
+    /// The value of `measure(i)`. An angle is taken from atan2, not from the
+    /// acos of `measure`, which loses half the digits near 0 and π: between
+    /// parallel lines it measures √(2ε) = 1.5e-8.
     pub fn measure_value(&self, i: usize) -> f64 {
+        if let Some(d) = self.dims[i].as_ref()
+            && let DimKind::Angle(l1, l2) = d.kind
+        {
+            let (u, w) = (self.line_dir(l1), self.line_dir(l2));
+            let (u, w) = ([self.eval_now(&u.0), self.eval_now(&u.1)], [self.eval_now(&w.0), self.eval_now(&w.1)]);
+            let th = (u[0] * w[1] - u[1] * w[0]).abs().atan2(u[0] * w[0] + u[1] * w[1]);
+            return if d.supp { std::f64::consts::PI - th } else { th };
+        }
         self.eval_now(&self.measure(i))
     }
 

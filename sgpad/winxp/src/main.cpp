@@ -144,7 +144,7 @@ bool cmd_state(UINT id, bool *checked) {
         return true;
     }
     if ((id >= ID_CON_FIRST && id <= ID_CON_INFINITE) || (id >= ID_DIM_FIRST && id <= ID_DIM_SUPP)) return action_enabled(id, checked);
-    if (id >= ID_EDIT_COPY_C && id <= ID_EDIT_COPY_MAXIMA) return pane_has_formula();
+    if (id >= ID_EDIT_COPY_CODE && id <= ID_EDIT_COPY_CODE_LAST) return pane_has_formula();
     switch (id) {
     case ID_FILE_EXPORT: return pane_has_formula();
     case ID_EDIT_UNDO: return sg_doc_undo_len(d) > 0;
@@ -586,8 +586,8 @@ void command(UINT id) {
         action_run(id);
         return;
     }
-    if (id >= ID_EDIT_COPY_C && id <= ID_EDIT_COPY_MAXIMA) {
-        pane_copy_code(id - ID_EDIT_COPY_C);
+    if (id >= ID_EDIT_COPY_CODE && id <= ID_EDIT_COPY_CODE_LAST) {
+        pane_copy_code(id - ID_EDIT_COPY_CODE);
         return;
     }
     if (id >= ID_FILE_MRU1 && id <= ID_FILE_MRU4) {
@@ -740,6 +740,11 @@ LRESULT CALLBACK frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_INITMENUPOPUP: {
         HMENU m = (HMENU)wp;
         if (GetMenuItemCount(m) > 0 && (GetMenuState(m, ID_FILE_EXIT, MF_BYCOMMAND) != (UINT)-1)) init_file_menu(m);
+        // Copy Formula as Code: the languages sggeo lists, in place of the one item of the resource
+        if (GetMenuItemCount(m) > 0 && GetMenuItemID(m, 0) == ID_EDIT_COPY_CODE) {
+            while (GetMenuItemCount(m) > 0) DeleteMenu(m, 0, MF_BYPOSITION);
+            fill_code_menu(m);
+        }
         init_popup(m);
         return 0;
     }
@@ -748,7 +753,10 @@ LRESULT CALLBACK frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (flags == 0xFFFF && lp == 0) break;
         wstr s;
         if (!(flags & MF_POPUP) && !(flags & MF_SEPARATOR)) {
-            s = load_str(id >= ID_FILE_MRU1 && id <= ID_FILE_MRU4 ? ID_FILE_MRU1 : id);
+            if (id >= ID_EDIT_COPY_CODE && id - ID_EDIT_COPY_CODE < lang_labels().size())
+                s = L"Copies the formula to the Clipboard as " + lang_labels()[id - ID_EDIT_COPY_CODE] + L" code";
+            else
+                s = load_str(id >= ID_FILE_MRU1 && id <= ID_FILE_MRU4 ? ID_FILE_MRU1 : id);
             size_t nl = s.find(L'\n');
             if (nl != wstr::npos) s = s.substr(0, nl);
         }

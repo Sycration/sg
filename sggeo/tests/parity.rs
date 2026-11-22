@@ -1,15 +1,16 @@
-//! The C and JS interfaces offer exactly what `sggeo::ops` offers: every
-//! public function of `ops` has a C wrapper and a JS wrapper, and the
-//! wrappers reach the library only through `ops`.
+//! The C, JS and Python interfaces offer exactly what `sggeo::ops` offers:
+//! every public function of `ops` has a C wrapper, a JS wrapper and a Python
+//! wrapper, and the wrappers reach the library only through `ops`.
 
 use std::collections::BTreeSet;
 
 const OPS: &str = include_str!("../src/ops.rs");
 const FFI: &str = include_str!("../src/ffi.rs");
 const JS: &str = include_str!("../src/js.rs");
+const PY: &str = include_str!("../src/py.rs");
 
 /// Functions of `Document` for Rust code that also uses the library
-/// internals; C and JS have no internals to hand over.
+/// internals; C, JS and Python have no internals to hand over.
 const RUST_ONLY: [&str; 3] = ["from_sketch", "sketch", "sketch_mut"];
 
 /// Public functions of `ops`: the free functions (`ops::name`) and the
@@ -46,17 +47,17 @@ fn calls(src: &str, path: &str) -> bool {
 }
 
 #[test]
-fn every_ops_function_has_c_and_js_wrappers() {
+fn every_ops_function_has_c_js_and_python_wrappers() {
     let api = ops_api();
     assert!(api.len() > 50, "found only {} ops functions; is the scan broken?", api.len());
     let missing = |src: &str| api.iter().filter(|p| !calls(src, p)).cloned().collect::<Vec<_>>();
-    let (c, js) = (missing(FFI), missing(JS));
-    assert!(c.is_empty() && js.is_empty(), "no C wrapper: {c:?}\nno JS wrapper: {js:?}");
+    let (c, js, py) = (missing(FFI), missing(JS), missing(PY));
+    assert!(c.is_empty() && js.is_empty() && py.is_empty(), "no C wrapper: {c:?}\nno JS wrapper: {js:?}\nno Python wrapper: {py:?}");
 }
 
 #[test]
 fn wrappers_use_only_ops() {
-    for (file, src) in [("ffi.rs", FFI), ("js.rs", JS)] {
+    for (file, src) in [("ffi.rs", FFI), ("js.rs", JS), ("py.rs", PY)] {
         for (n, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             let bad = code.match_indices("crate::").any(|(i, _)| !code[i..].starts_with("crate::ops")) || RUST_ONLY.iter().any(|f| code.contains(&format!(".{f}(")) || code.contains(&format!("::{f}(")));

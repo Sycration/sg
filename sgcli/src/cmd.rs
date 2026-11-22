@@ -280,6 +280,9 @@ impl Session {
         let deg = if f.is_angle { format!(" ({}°)", num(f.value.to_degrees())) } else { String::new() };
         let how = if f.exact { "exact" } else { "approximate: part of it was solved numerically (?? searches longer)" };
         out.push(format!("  ≈ {}{deg}   {how}", num(f.value)));
+        for l in &f.limits {
+            out.push(format!("  only where {}; this construction is at that limit", l.0));
+        }
         self.last = Some((t, extra_ms, f));
         Ok(out)
     }
@@ -302,7 +305,7 @@ impl Session {
             "" => "python",
             l => l,
         };
-        let lang = Lang::from_name(lang).map_err(|_| "code c | rust | js | py | mma | maxima".to_string())?;
+        let lang = Lang::from_name(lang).map_err(|_| format!("code LANG: {} (py, mma for short)", code_langs()))?;
         Ok(ops::formula_code(self.formula()?, lang).lines().map(String::from).collect())
     }
 
@@ -366,6 +369,11 @@ fn one_line(text: &str, e: String) -> String {
         Some(m) if !text.contains('\n') => m.to_string(),
         _ => e,
     }
+}
+
+/// The languages `code` takes, from the library.
+pub fn code_langs() -> String {
+    ops::code_languages().iter().map(|l| l.0).collect::<Vec<_>>().join(" ")
 }
 
 /// `v` to 6 significant digits.

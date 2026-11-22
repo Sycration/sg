@@ -287,6 +287,10 @@ The app's cancel flag (`set_cancel`) stops a derivation at once.
   guards against a runaway computation.
 - `known_short_formulas_stay_short` (`tests/examples.rs`): an upper length for every reference
   dimension of 22 example files, and the same formula from two derivations in a row.
+- `formulas_match_measurements` (`tests/examples.rs`): every reference dimension of every
+  example file has an exact formula whose value is the measurement to 1e-12, except those
+  listed there (numeric by design, or a double root, a triple root or cancellation that f64
+  resolves less finely).
 - Unit tests: `nf` (cancellation, square factors, identified roots, denesting, absolute values,
   trigonometry),
   `fit` (null vector, coefficient recognition), `dd`, `expr` (Fourier form), `alg`, `derive`.
@@ -463,7 +467,13 @@ trigonometric functions holds on both sides of the discriminant's zero
 (`gen_polynomials::cubic_near_double_root` stays on one side). Likewise the focus of an
 ellipse is √(a² − b²) along the first axis for a > b and √(b² − a²) along the second for a < b;
 at a = b the formula is that of one side, and which focus the point becomes when a and b part
-is open (`gen_conics::ellipse_degenerate_circle_focus`). The same construction can show different formulas
+is open (`gen_conics::ellipse_degenerate_circle_focus`). A construction at such a limit is
+reported (`formula::limits`, shown by the apps under the formula): each condition of the
+formula's roots, `acos`, `asin` and `ln` that holds with equality to rounding here and fails when
+the quantities move by 1% (so a square that is 0 is not one); `tests/examples.rs` lists the
+examples at a limit. A construction near a limit, not at it, is not reported, and the
+conditions of the block path's intermediate results are not seen once they cancel out of the
+formula. The same construction can show different formulas
 after dragging across a branch boundary. A fitted formula is checked over the sample range
 (±40% or what could be sampled), and |a| is kept where the sign changes inside that range, but
 the final `resolve_abs` resolves it by the current sign for display. `acos(cos u)` within 0.1
@@ -545,8 +555,9 @@ Environment variables:
 - `SGGEO_DERIVE_FILE=<file.sgp>` (with optional `SGGEO_DERIVE_LEVEL=<n>`): derive every reference
   dimension of a saved construction (`derive_file` in `tests/examples.rs`).
 
-Each test run writes its construction to `test_examples/<suite>/<test>.sgp`, which opens in the
-app (`cargo run --release -p sgpad -- <file>`).
+A test writes its construction to `test_examples/<suite>/<test>.sgp`, which opens in the app
+(`cargo run --release -p sgpad -- <file>`), when that file does not exist yet;
+`SGGEO_WRITE_EXAMPLES=1` writes them all again (after a change to the solver or to a test).
 
 Commands:
 

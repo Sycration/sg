@@ -19,7 +19,7 @@ find
 
 where
   e1 a 5 b 3 angle 0° [fixed angle]
-  A (4, 6.8359530602832e-26)
+  A (4, 0)
   e2 a 3 b 2 angle 28.64788975654116° [fixed angle]
   B (3.669394008139769, 2.03784129428424)
   a1 label (0.3, 0.3)

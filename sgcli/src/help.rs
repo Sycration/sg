@@ -112,7 +112,8 @@ const DERIVE: &str = r#"
   ? q = d1/d2       ... of a new variable q
   ??                search longer for the last one (10 s more each time)
 
-  code LANG         the last formula as code: c rust js py mma maxima
+  code LANG         the last formula as code, LANG one of
+                    {langs} (py, mma for short)
   latex             the last formula as LaTeX
   png [FILE]        the last formula typeset as an image
 
@@ -150,5 +151,5 @@ pub fn help(topic: &str) -> Vec<String> {
         "doc" | "ls" | "plot" | "del" | "name" | "undo" | "save" | "open" | "run" | "files" => DOC,
         _ => return vec![format!("no help on {topic}: try help, help make, help construct, help constrain, help measure, help derive, help doc")],
     };
-    t.trim_matches('\n').lines().map(String::from).collect()
+    t.trim_matches('\n').replace("{langs}", &crate::cmd::code_langs()).lines().map(String::from).collect()
 }

@@ -27,18 +27,6 @@ fn text_cell(ui: &mut Ui, bufs: &mut HashMap<String, String>, key: &str, current
     (resp, out)
 }
 
-/// Menu label of a language formulas are copied as.
-fn lang_label(l: ops::Lang) -> &'static str {
-    match l {
-        ops::Lang::C => "C",
-        ops::Lang::Rust => "Rust",
-        ops::Lang::Js => "JavaScript",
-        ops::Lang::Python => "Python",
-        ops::Lang::Mathematica => "Mathematica",
-        ops::Lang::Maxima => "Maxima",
-    }
-}
-
 fn section(ui: &mut Ui, icon: Icon) -> egui::Rect {
     let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
     icons::paint(ui.painter(), r, icon, MUTED);
@@ -421,7 +409,7 @@ impl App {
                     let code = small_icon_btn(ui, Icon::Code, false, "Copy as code");
                     egui::Popup::menu(&code).show(|ui| {
                         for (lang, text) in &f.code {
-                            if ui.button(lang_label(*lang)).clicked() {
+                            if ui.button(lang.label()).clicked() {
                                 copy = Some(text.clone());
                             }
                         }
@@ -493,6 +481,9 @@ impl App {
             }
             if mismatch && f.value.is_finite() {
                 ui.label(egui::RichText::new(format!("≠ {}", fmt_val(f.value))).color(ERR).size(12.0));
+            }
+            for l in &f.limits {
+                ui.label(egui::RichText::new(format!("Only where {l}; this construction is at that limit.")).color(SEL).size(12.0));
             }
         });
     }
