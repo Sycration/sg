@@ -4270,36 +4270,114 @@ pub fn derive_harder(doc: &Doc, target: &Expr, extra_ms: u64) -> Result<Derived,
 }
 
 fn derive_strategies(doc: &Doc, target: &Expr, extra_ms: u64) -> Result<Derived, String> {
+    // how precisely the measurement is known, once a formula misses it
+    let cell = std::cell::OnceCell::new();
+    let known = || *cell.get_or_init(|| uncertainty(doc, target));
     // Grounding choices lead to very different block structures; try the
     // base-geometry anchor first and the target anchor second, keeping the
     // simplest exact result. Extra time goes mostly to the first.
     let extra0 = extra_ms * 7 / 10;
     let (first, grounded, normalized) = derive_impl(doc, target, 0, 1500 + extra0)?;
     // (a formula in normal form comes out the same from the other grounding)
-    if !grounded || valid(&first) && first.exact && (normalized || complexity(&first.expr) < 300) {
-        return Ok(checked(first));
+    if !grounded || valid(&first, &known) && first.exact && (normalized || complexity(&first.expr) < 300) {
+        return Ok(checked(first, &known));
     }
     let second = derive_impl(doc, target, 1, 600 + (extra_ms - extra0)).ok().map(|r| r.0);
     let score = |d: &Derived| (!d.exact, complexity(&d.expr));
     let best = match second {
-        Some(b) if valid(&b) && (!valid(&first) || score(&b) < score(&first)) => b,
+        Some(b) if valid(&b, &known) && (!valid(&first, &known) || score(&b) < score(&first)) => b,
         _ => first,
     };
-    Ok(checked(best))
+    Ok(checked(best, &known))
 }
 
-fn valid(d: &Derived) -> bool {
-    d.value.is_finite() && (d.value - d.actual).abs() <= 1e-7 * (1.0 + d.actual.abs())
+/// True when the formula reproduces the measurement: to 1e-7, or, where the
+/// measurement is known less precisely (`known`, the target's `uncertainty`,
+/// worked out only then), to that, up to 1e-4.
+fn valid(d: &Derived, known: &dyn Fn() -> f64) -> bool {
+    let (err, scale) = ((d.value - d.actual).abs(), 1.0 + d.actual.abs());
+    d.value.is_finite() && (err <= 1e-7 * scale || err <= 1e-4 * scale && err <= 1e-7 * scale + known())
 }
 
 /// A formula that does not reproduce the measurement is a derivation failure:
-/// report the measured number instead of a wrong expression.
-fn checked(d: Derived) -> Derived {
-    if valid(&d) {
+/// report the measured number instead of a wrong expression, to the digits
+/// that are known of it.
+fn checked(d: Derived, known: &dyn Fn() -> f64) -> Derived {
+    if valid(&d, known) {
         d
     } else {
-        Derived { expr: float_raw(d.actual), exact: false, value: d.actual, actual: d.actual }
+        Derived { expr: float_raw(known_digits(d.actual, known())), exact: false, value: d.actual, actual: d.actual }
     }
+}
+
+/// `v` rounded to the decimal place of its uncertainty `u` (3.0000007149 known to 2e-6 is
+/// 3.000001), or `v` itself when that is below the place of its 12th digit.
+pub fn known_digits(v: f64, u: f64) -> f64 {
+    if !(u > 1e-12 * v.abs()) || !v.is_finite() {
+        return v;
+    }
+    // by the power of ten that is exact: 10^7 and not 10^-7
+    let k = u.log10().floor() as i32;
+    if k < 0 {
+        let s = 10f64.powi(-k);
+        (v * s).round() / s
+    } else {
+        let q = 10f64.powi(k);
+        (v / q).round() * q
+    }
+}
+
+/// How precisely the value of `target` is known (see `uncertainty_of`).
+pub fn uncertainty(doc: &Doc, target: &Expr) -> f64 {
+    uncertainty_of(doc, &|v| eval(target, &|s| v.get(s as usize).copied().unwrap_or(f64::NAN)))
+}
+
+/// How precisely a measurement `measure` (of the parameter values) is known:
+/// how far it moves when the given values of `doc` (the parameters that are
+/// not unknowns: driving values, variables, locked coordinates) move by the
+/// rounding of a solution, 1e-13 of their size. Moves that small stay within
+/// the solver's tolerance, so the given values are moved by 1e-6 and 1e-8,
+/// each up or down (the largest of four such moves), and the change of the
+/// measurement is scaled down by the power that relates the two: linearly
+/// where the configuration is regular, as the square root at a double root
+/// (the foci of an ellipse with a = b) and as the cube root at a triple one.
+pub fn uncertainty_of(doc: &Doc, measure: &dyn Fn(&[f64]) -> f64) -> f64 {
+    const ROUNDING: f64 = 1e-13;
+    let (eqns, _) = doc.equations();
+    let unknowns = doc.unknowns();
+    let unknown: HashSet<usize> = unknowns.iter().copied().collect();
+    let sys = crate::solver::Sys::build(&eqns, unknowns);
+    let vals: Vec<f64> = doc.params.iter().map(|p| p.v).collect();
+    // a value that is 0 moves by its share of the size of the document
+    let size = vals.iter().map(|x| x.abs()).filter(|x| x.is_finite()).fold(1.0, f64::max);
+    let m = measure(&vals);
+    let moved = |eta: f64| -> f64 {
+        let mut most: f64 = 0.0;
+        for k in 0..4u64 {
+            let mut v = vals.clone();
+            for (p, x) in v.iter_mut().enumerate().filter(|(p, _)| !unknown.contains(p)) {
+                // up or down by a hash of the parameter and the trial (splitmix64)
+                let mut h = (p as u64) << 8 ^ k;
+                h = (h ^ h >> 30).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                h = (h ^ h >> 27).wrapping_mul(0x94d0_49bb_1331_11eb);
+                *x += if (h ^ h >> 31) & 1 == 0 { eta } else { -eta } * if *x == 0.0 { 1e-3 * size } else { x.abs() };
+            }
+            if sys.solve(&mut v, &[], [0.0; 2]) {
+                let d = (measure(&v) - m).abs();
+                if d.is_finite() {
+                    most = most.max(d);
+                }
+            }
+        }
+        most
+    };
+    let (far, near) = (moved(1e-6), moved(1e-8));
+    if !(near > 0.0) {
+        return 0.0;
+    }
+    // the power: 1 when the change is linear, 1/2 at a double root, 1/3 at a triple one
+    let power = if far > near { ((far / near).log10() / 2.0).clamp(1.0 / 3.0, 1.0) } else { 1.0 };
+    near * (ROUNDING / 1e-8).powf(power)
 }
 
 thread_local! {
@@ -5162,6 +5240,16 @@ mod tests {
         for (p, v) in doc.params.iter_mut().zip(vals) {
             p.v = v;
         }
+    }
+
+    #[test]
+    fn known_digits_drop_what_is_not_known() {
+        assert_eq!(known_digits(3.0000007149226597, 6.3e-7), 3.0000007);
+        assert_eq!(known_digits(2.9999992850774344, 2e-6), 2.999999);
+        // known to rounding, or not at all: unchanged
+        assert_eq!(known_digits(0.5996960793170383, 1e-13), 0.5996960793170383);
+        assert_eq!(known_digits(1.5, f64::NAN), 1.5);
+        assert_eq!(known_digits(f64::INFINITY, 1e-3), f64::INFINITY);
     }
 
     #[test]

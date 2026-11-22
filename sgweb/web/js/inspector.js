@@ -1,21 +1,14 @@
 // The inspector: the formula of the selected measurement (Result), the variables, functions, dimensions and
 // constraints of the construction (Quantities), and the construction as .sgp text (Text).
 
-import { latexPng, describe } from "./sg.js";
+import { codeLanguages, latexPng, describe } from "./sg.js";
 import { settled } from "./formula.js";
 import { iconEl } from "./icons.js";
 import { copyText, fmt, fmtDim, h, splitSub } from "./util.js";
 
-const LANGS = [
-  ["c", "C"],
-  ["rust", "Rust"],
-  ["js", "JavaScript"],
-  ["python", "Python"],
-  ["mathematica", "Mathematica"],
-  ["maxima", "Maxima"],
-];
 
-const CON_LABEL = {
+/** Each kind of constraint sggeo has (`conKinds`) as its symbol and phrase in the list of constraints. */
+export const CON_LABEL = {
   coincident: ["•", "coincident"],
   on_curve: ["∈", "on"],
   midpoint: ["½", "midpoint of"],
@@ -218,6 +211,7 @@ export class Inspector {
     if (!(Math.abs(f.value - f.actual) <= 1e-6 * (1 + Math.abs(f.actual))) && Number.isFinite(f.value)) {
       pane.append(h("p.error", null, iconEl("warning"), ` The formula gives ${fmt(f.value)} here, the construction measures ${fmt(f.actual)}.`));
     }
+    for (const l of f.limits ?? []) pane.append(h("p.limit", null, iconEl("warning"), ` Only where ${l}; this construction is at that limit.`));
     const bar = h("div.result-actions");
     if (!settled(r) || !f.exact) {
       const b = h(
@@ -232,11 +226,13 @@ export class Inspector {
       h("button.btn", { type: "button", onclick: () => copyText(f.plain).then(copied("the formula")) }, iconEl("copy"), "Text"),
       h("button.btn", { type: "button", onclick: () => copyText(f.latex).then(copied("the LaTeX")) }, iconEl("latex"), "LaTeX"),
     );
-    const sel = h("select.btn", { "aria-label": "Copy as code" }, h("option", { value: "" }, "Code…"), ...LANGS.map(([k, n]) => h("option", { value: k }, n)));
+    // the languages sggeo writes code in, as [name, label]
+    const langs = codeLanguages();
+    const sel = h("select.btn", { "aria-label": "Copy as code" }, h("option", { value: "" }, "Code…"), ...langs.map(([k, n]) => h("option", { value: k }, n)));
     sel.addEventListener("change", () => {
       const k = sel.value;
       sel.value = "";
-      if (k) copyText(f.code[k]).then(copied(`the ${LANGS.find((l) => l[0] === k)[1]} code`));
+      if (k) copyText(f.code[k]).then(copied(`the ${langs.find((l) => l[0] === k)[1]} code`));
     });
     bar.append(sel);
     pane.append(bar);

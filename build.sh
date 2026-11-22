@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Release builds of sgpad (desktop program), sgcli (command line), sgweb (web app server) and sggeo (C library /
-# Wasm module), collected under build/:
+# Python module / Wasm module), collected under build/:
 #
 #   build/<platform>/<arch>/bin   sgpad and sgcli executables and the sgcli README.md
-#   build/<platform>/<arch>/lib   sggeo shared library, import library, sggeo.h and the sggeo README.md
+#   build/<platform>/<arch>/lib   sggeo shared library, import library, sggeo.h, the sggeo README.md and the
+#                                 sggeo Python wheel (abi3, for Python 3.9 and later)
 #   build/web/wasm32/bin          sgweb, the web app server with the sggeo Wasm module built in, for Linux x64 (sgweb)
 #                                 and Windows x64 (sgweb.exe), and the sgweb README.md
 #   build/web/wasm32/lib          sggeo Wasm module, its wasm-bindgen JS glue and the sggeo README.md
@@ -18,6 +19,7 @@
 #     aarch64-pc-windows-gnullvm x86_64-apple-darwin aarch64-apple-darwin wasm32-unknown-unknown
 #     i686-pc-windows-msvc x86_64-pc-windows-msvc
 #   - linux, windows, web: zig and cargo-zigbuild
+#   - linux, windows, macos: maturin (pip install maturin), which builds the Python wheels
 #   - macos: osxcross (its target/bin on PATH, or OSXCROSS_BIN set to that directory)
 #   - web: wasm-bindgen-cli matching the wasm-bindgen version in Cargo.lock
 #   - winxp: zig, thunk (cargo install thunk-cli), bsdtar, llvm-readobj and llvm-dlltool (llvm), and
@@ -40,8 +42,10 @@ SGWEB_README=$ROOT/sgweb/README.md
 # the sggeo Wasm module and its JS glue, which build/web ships and the sgweb binaries embed
 PKG=$TARGET_DIR/sggeo-pkg
 
-# Linux binaries link against this glibc version so that they load on older distributions.
+# Linux binaries link against this glibc version so that they load on older distributions; the
+# Python wheels have the matching manylinux tag.
 GLIBC=2.17
+MANYLINUX=manylinux2014
 # Minimum macOS version of the macOS binaries.
 export MACOSX_DEPLOYMENT_TARGET=11.0
 
@@ -64,18 +68,32 @@ collect() {
   cp "$HEADER" "$LIB_README" "$dest/lib/"
 }
 
+# wheel PLATFORM ARCH TRIPLE MATURIN_ARG...: builds the sggeo Python wheel of one target into its lib/. The
+# Python module is the sggeo cdylib built with the python feature, so it builds in a target directory of
+# its own, where it does not replace the C library.
+wheel() {
+  local platform=$1 arch=$2 triple=$3
+  shift 3
+  echo "==> $platform $arch python wheel"
+  maturin build --release --manifest-path "$ROOT/sggeo/Cargo.toml" --target "$triple" \
+    --target-dir "$TARGET_DIR/python" --out "$OUT/$platform/$arch/lib" "$@"
+}
+
 build_linux() {
   need cargo-zigbuild "cargo install cargo-zigbuild"
+  need maturin "pip install maturin"
   for pair in x64:x86_64 arm64:aarch64; do
     local arch=${pair%%:*} triple=${pair#*:}-unknown-linux-gnu
     echo "==> linux $arch"
     cargo zigbuild --release --workspace --exclude sgweb --target "$triple.$GLIBC"
     collect linux "$arch" "$triple" "" libsggeo.so
+    wheel linux "$arch" "$triple" --zig --compatibility "$MANYLINUX"
   done
 }
 
 build_windows() {
   need cargo-zigbuild "cargo install cargo-zigbuild"
+  need maturin "pip install maturin"
   # rustc requests libunwind for gnullvm with --unwindlib=libunwind, which zig cc ignores, so the
   # _Unwind_* symbols stay undefined unless libunwind is named explicitly.
   export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-C link-arg=-lunwind"
@@ -84,12 +102,15 @@ build_windows() {
     echo "==> windows $arch"
     cargo zigbuild --release --workspace --exclude sgweb --target "$triple"
     collect windows "$arch" "$triple" .exe sggeo.dll libsggeo.dll.a
+    # maturin writes the import library of python3.dll that the module links against
+    wheel windows "$arch" "$triple" --zig
   done
 }
 
 # cargo-zigbuild is not used for macOS: zig prefixes the SDK's library paths with the sysroot a second
 # time and then fails to find libobjc and libiconv, so the osxcross clang links instead.
 build_macos() {
+  need maturin "pip install maturin"
   local bin=${OSXCROSS_BIN:-}
   if [ -z "$bin" ]; then
     need o64-clang "install osxcross and put its target/bin on PATH, or set OSXCROSS_BIN"
@@ -111,6 +132,7 @@ build_macos() {
     cargo rustc --release -p sggeo --lib --target "$triple" -- \
       -C link-arg=-Wl,-install_name,@rpath/libsggeo.dylib
     collect macos "$arch" "$triple" "" libsggeo.dylib
+    wheel macos "$arch" "$triple"
   done
 }
 

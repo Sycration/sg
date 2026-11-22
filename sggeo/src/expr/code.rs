@@ -19,10 +19,13 @@ pub enum Lang {
     Mathematica,
     /// Maxima.
     Maxima,
+    /// Python 3 with SymPy: a symbolic expression in symbols for the other
+    /// quantities.
+    Sympy,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 6] = [Lang::C, Lang::Rust, Lang::Js, Lang::Python, Lang::Mathematica, Lang::Maxima];
+    pub const ALL: [Lang; 7] = [Lang::C, Lang::Rust, Lang::Js, Lang::Python, Lang::Mathematica, Lang::Maxima, Lang::Sympy];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -32,6 +35,20 @@ impl Lang {
             Lang::Python => "python",
             Lang::Mathematica => "mathematica",
             Lang::Maxima => "maxima",
+            Lang::Sympy => "sympy",
+        }
+    }
+
+    /// The language's name to show: "JavaScript" for `js`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Lang::C => "C",
+            Lang::Rust => "Rust",
+            Lang::Js => "JavaScript",
+            Lang::Python => "Python",
+            Lang::Mathematica => "Mathematica",
+            Lang::Maxima => "Maxima",
+            Lang::Sympy => "SymPy",
         }
     }
 
@@ -75,6 +92,11 @@ impl Lang {
                 "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
                 "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or",
                 "pass", "raise", "return", "try", "while", "with", "yield", "math", "abs",
+            ],
+            Lang::Sympy => &[
+                "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
+                "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or",
+                "pass", "raise", "return", "try", "while", "with", "yield", "sympy",
             ],
             Lang::Mathematica => &[
                 "C", "D", "E", "I", "K", "N", "O", "Pi", "Degree", "Infinity", "Indeterminate", "True", "False", "Null", "Gamma", "Beta",
@@ -158,6 +180,8 @@ impl Emit<'_> {
     fn num(&self, n: Num) -> (String, u8) {
         match n {
             Num::R(r) if r.d == 1 => (self.int(r.n), P_ATOM),
+            // `2 / 3` is a float in Python
+            Num::R(r) if self.lang == Lang::Sympy => (format!("sympy.Rational({}, {})", r.n, r.d), P_ATOM),
             Num::R(r) => (format!("{} / {}", self.int(r.n), self.int(r.d)), P_MUL),
             Num::F(f) => (self.float(f), P_ATOM),
         }
@@ -182,6 +206,7 @@ impl Emit<'_> {
                     Lang::Python => "math.pi",
                     Lang::Mathematica => "Pi",
                     Lang::Maxima => "%pi",
+                    Lang::Sympy => "sympy.pi",
                 }
                 .into(),
                 P_ATOM,
@@ -208,6 +233,8 @@ impl Emit<'_> {
                     (Lang::C, Fun::Abs) => "fabs",
                     (Lang::C | Lang::Js | Lang::Python | Lang::Maxima, Fun::Ln) => "log",
                     (Lang::Python, Fun::Abs) => "abs",
+                    (Lang::Sympy, Fun::Abs) => "Abs",
+                    (Lang::Sympy, Fun::Ln) => "log",
                     (Lang::Mathematica, _) => match f {
                         Fun::Sin => "Sin",
                         Fun::Cos => "Cos",
@@ -251,6 +278,7 @@ impl Emit<'_> {
             Lang::Rust => self.method(a, name, &args(rest)),
             Lang::Js if lib => format!("Math.{name}({})", args(&all)),
             Lang::Python if lib => format!("math.{name}({})", args(&all)),
+            Lang::Sympy => format!("sympy.{name}({})", args(&all)),
             Lang::Mathematica => format!("{name}[{}]", args(&all)),
             _ => format!("{name}({})", args(&all)),
         }
@@ -295,6 +323,14 @@ impl Emit<'_> {
             }
             (v.into_iter().map(|(s, l)| paren(s, l <= P_NEG)).collect::<Vec<_>>().join(" * "), P_MUL)
         };
+        // a quotient of plain numbers would be a float in Python
+        let plain = |v: &[(String, u8)]| v.iter().all(|(s, _)| s.parse::<i128>().is_ok());
+        if self.lang == Lang::Sympy && !bot.is_empty() && plain(&top) && plain(&bot) {
+            let t = top.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" * ");
+            let b = bot.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" * ");
+            let t = if t.is_empty() { "1".to_string() } else { t };
+            return (format!("sympy.Rational({t}, {b})"), P_ATOM);
+        }
         let (t, tl) = if top.is_empty() { (self.one(), P_ATOM) } else { join(top) };
         if bot.is_empty() {
             return (t, tl);
@@ -316,6 +352,11 @@ impl Emit<'_> {
             let name = if self.lang == Lang::Mathematica { "Sqrt" } else { "sqrt" };
             return (self.call(name, b, &[], true), P_ATOM);
         }
+        // an odd root of a negative number is the real root, as sggeo evaluates it; Maxima takes it so
+        if let Some(r) = r.filter(|r| r.d % 2 == 1 && r.d != 1 && self.lang != Lang::Maxima) {
+            let root = self.real_root(b, r.d);
+            return if r.n == 1 { root } else { self.int_power(root, r.n) };
+        }
         let int = r.filter(|r| r.d == 1).map(|r| r.n);
         let infix = |op: &str| {
             let (bs, bl) = self.expr(b);
@@ -331,8 +372,38 @@ impl Emit<'_> {
             Lang::Js => infix(" ** "),
             // `**` takes a negative base to a complex number for a fractional exponent
             Lang::Python if int.is_none() => (self.call("pow", b, &[x], true), P_ATOM),
-            Lang::Python => infix("**"),
+            Lang::Python | Lang::Sympy => infix("**"),
             Lang::Mathematica | Lang::Maxima => infix("^"),
+        }
+    }
+
+    /// The real `d`-th root of `b`, for odd `d`: negative for a negative `b`.
+    fn real_root(&self, b: &Expr, d: i128) -> (String, u8) {
+        let (bs, bl) = self.expr(b);
+        let inv = format!("{} / {}", self.int(1), self.int(d));
+        match self.lang {
+            Lang::C if d == 3 => (format!("cbrt({bs})"), P_ATOM),
+            Lang::C => (format!("copysign(pow(fabs({bs}), {inv}), {bs})"), P_ATOM),
+            Lang::Rust if d == 3 => (self.method(b, "cbrt", ""), P_ATOM),
+            Lang::Rust => (format!("{}.powf({inv}).copysign({bs})", self.method(b, "abs", "")), P_ATOM),
+            Lang::Js if d == 3 => (format!("Math.cbrt({bs})"), P_ATOM),
+            Lang::Js => (format!("Math.sign({bs}) * Math.abs({bs}) ** ({inv})"), P_MUL),
+            // math.cbrt is only in Python 3.11 and later
+            Lang::Python => (format!("math.copysign(abs({bs}) ** ({inv}), {bs})"), P_ATOM),
+            Lang::Mathematica => (format!("Surd[{bs}, {d}]"), P_ATOM),
+            Lang::Sympy => (format!("sympy.real_root({bs}, {d})"), P_ATOM),
+            Lang::Maxima => (format!("{}^({inv})", paren(bs, bl <= P_POW)), P_POW),
+        }
+    }
+
+    /// `(s, l)` to the integer power `n`.
+    fn int_power(&self, (s, l): (String, u8), n: i128) -> (String, u8) {
+        match self.lang {
+            Lang::C => (format!("pow({s}, {})", self.int(n)), P_ATOM),
+            Lang::Rust => (format!("{}.powi({n})", paren(s, l < P_ATOM)), P_ATOM),
+            Lang::Js => (format!("{} ** {n}", paren(s, l <= P_POW)), P_POW),
+            Lang::Python | Lang::Sympy => (format!("{}**{n}", paren(s, l <= P_POW)), P_POW),
+            Lang::Mathematica | Lang::Maxima => (format!("{}^{n}", paren(s, l <= P_POW)), P_POW),
         }
     }
 }
@@ -361,7 +432,7 @@ pub fn program(lang: Lang, lhs: &str, main: &Expr, defs: &[(u32, Expr)], names: 
         s
     };
     let target = unique(lhs);
-    let map: HashMap<u32, String> = syms.into_iter().map(|s| (s, unique(&names(s)))).collect();
+    let map: HashMap<u32, String> = syms.iter().map(|&s| (s, unique(&names(s)))).collect();
     let em = Emit { lang, names: &map };
     let rows: Vec<(String, String)> =
         defs.iter().map(|(s, d)| (map[s].clone(), em.expr(d).0)).chain([(target, em.expr(main).0)]).collect();
@@ -378,10 +449,26 @@ pub fn program(lang: Lang, lhs: &str, main: &Expr, defs: &[(u32, Expr)], names: 
             Lang::Mathematica if i + 1 == n => format!("{v} = {e}"),
             Lang::Mathematica => format!("{v} = {e};"),
             Lang::Maxima => format!("{v} : {e};"),
+            Lang::Sympy => format!("{v} = {e}"),
         })
         .collect();
     if lang == Lang::Python && out.iter().any(|l| l.contains("math.")) {
         out.insert(0, "import math".into());
+    }
+    if lang == Lang::Sympy {
+        // the quantities the formula reads are real symbols of their names
+        let given: Vec<u32> = syms.into_iter().filter(|s| !defs.iter().any(|(d, _)| d == s)).collect();
+        let vars = given.iter().map(|s| map[s].as_str()).collect::<Vec<_>>().join(", ");
+        let quoted = |s: String| s.replace('\\', "\\\\").replace('"', "\\\"");
+        match given[..] {
+            [] => {}
+            [s] => out.insert(0, format!("{vars} = sympy.Symbol(\"{}\", real=True)", quoted(names(s)))),
+            _ => {
+                let all = given.iter().map(|&s| quoted(names(s))).collect::<Vec<_>>().join(" ");
+                out.insert(0, format!("{vars} = sympy.symbols(\"{all}\", real=True)"));
+            }
+        }
+        out.insert(0, "import sympy".into());
     }
     out.join("\n")
 }
@@ -415,6 +502,10 @@ mod tests {
         assert_eq!(code(Lang::Python, &e), "import math\nd = math.sqrt(a**2 + b**2 - 2 * a * b * math.cos(theta))");
         assert_eq!(code(Lang::Mathematica, &e), "d = Sqrt[a^2 + b^2 - 2 * a * b * Cos[θ]]");
         assert_eq!(code(Lang::Maxima, &e), "d : sqrt(a^2 + b^2 - 2 * a * b * cos(theta));");
+        assert_eq!(
+            code(Lang::Sympy, &e),
+            "import sympy\na, b, theta = sympy.symbols(\"a b θ\", real=True)\nd = sympy.sqrt(a**2 + b**2 - 2 * a * b * sympy.cos(theta))"
+        );
     }
 
     #[test]
@@ -431,15 +522,72 @@ mod tests {
         // -(a^2) in JS needs the parentheses
         assert_eq!(code(Lang::Js, &neg(pow(sym(0), int(2)))), "const d = -(a ** 2);");
         assert_eq!(code(Lang::Python, &neg(pow(sym(0), int(2)))), "d = -a**2");
+        assert_eq!(code(Lang::Sympy, &atan2(sym(3), sym(4))), "import sympy\nx_A, in_ = sympy.symbols(\"x_A in\", real=True)\nd = sympy.atan2(x_A, in_)");
+    }
+
+    #[test]
+    fn odd_roots_are_real() {
+        // a^(1/5) + b^(2/3) - (a + b)^(3/5), real for negative a and b, and b^(3/2), which is not
+        let r = |n, d| num(Num::R(Rat::new(n, d).unwrap()));
+        let e = add(vec![pow(sym(0), r(1, 5)), pow(sym(1), r(2, 3)), neg(pow(add(vec![sym(0), sym(1)]), r(3, 5))), pow(sym(1), r(3, 2))]);
+        let want = [
+            (
+                Lang::C,
+                "double d = pow(b, 3.0 / 2.0) + pow(cbrt(b), 2.0) + copysign(pow(fabs(a), 1.0 / 5.0), a) \
+                 - pow(copysign(pow(fabs(a + b), 1.0 / 5.0), a + b), 3.0);",
+            ),
+            (
+                Lang::Rust,
+                "let d: f64 = b.powf(3.0 / 2.0) + b.cbrt().powi(2) + a.abs().powf(1.0 / 5.0).copysign(a) \
+                 - (a + b).abs().powf(1.0 / 5.0).copysign(a + b).powi(3);",
+            ),
+            (
+                Lang::Js,
+                "const d = b ** (3 / 2) + Math.cbrt(b) ** 2 + Math.sign(a) * Math.abs(a) ** (1 / 5) \
+                 - (Math.sign(a + b) * Math.abs(a + b) ** (1 / 5)) ** 3;",
+            ),
+            (
+                Lang::Python,
+                "import math\nd = math.pow(b, 3 / 2) + math.copysign(abs(b) ** (1 / 3), b)**2 + math.copysign(abs(a) ** (1 / 5), a) \
+                 - math.copysign(abs(a + b) ** (1 / 5), a + b)**3",
+            ),
+            (Lang::Mathematica, "d = b^(3 / 2) + Surd[b, 3]^2 + Surd[a, 5] - Surd[a + b, 5]^3"),
+            (Lang::Maxima, "d : b^(3 / 2) + b^(2 / 3) + a^(1 / 5) - (a + b)^(3 / 5);"),
+        ];
+        for (lang, want) in want {
+            assert_eq!(code(lang, &e), want);
+        }
+    }
+
+    #[test]
+    fn sympy_numbers() {
+        let r = |n, d| num(Num::R(Rat::new(n, d).unwrap()));
+        // fractions are exact; a quotient of integers would be a float in Python
+        let e = mul(vec![r(-1, 3), pow(sym(0), int(2)), pow(sym(1), int(-1))]);
+        assert_eq!(code(Lang::Sympy, &e), "import sympy\na, b = sympy.symbols(\"a b\", real=True)\nd = -(a**2 / (3 * b))");
+        assert_eq!(code(Lang::Sympy, &fun(Fun::Acos, r(-5, 6))), "import sympy\nd = sympy.acos(-sympy.Rational(5, 6))");
+        assert_eq!(code(Lang::Sympy, &mul(vec![r(2, 3), pi()])), "import sympy\nd = (2 * sympy.pi) / 3");
+        // odd roots are real roots, other powers stay powers
+        let e = add(vec![pow(sym(0), r(2, 3)), pow(sym(1), r(3, 2)), pow(sym(2), r(1, 5)), fun(Fun::Ln, fun(Fun::Abs, sym(5)))]);
+        assert_eq!(
+            code(Lang::Sympy, &e),
+            "import sympy\na, b, theta, E = sympy.symbols(\"a b θ E\", real=True)\nd = b**sympy.Rational(3, 2) + sympy.log(sympy.Abs(E)) + sympy.real_root(a, 3)**2 + sympy.real_root(theta, 5)"
+        );
+        // one symbol, and temporaries that are not symbols
+        let defs = [(6, add(vec![sym(0), int(1)]))];
+        assert_eq!(
+            program(Lang::Sympy, "d", &mul(vec![sym(6), sym(6)]), &defs, &names),
+            "import sympy\na = sympy.Symbol(\"a\", real=True)\nu_6 = a + 1\nd = u_6**2"
+        );
     }
 
     #[test]
     fn literals_and_names() {
         // sqrt(2) * E^(2/3) * pi
         let e = mul(vec![pow(int(2), num(Num::R(Rat::new(1, 2).unwrap()))), pow(sym(5), num(Num::R(Rat::new(2, 3).unwrap()))), pi()]);
-        assert_eq!(code(Lang::Rust, &e), "let d: f64 = f64::sqrt(2.0) * std::f64::consts::PI * E.powf(2.0 / 3.0);");
-        assert_eq!(code(Lang::Python, &e), "import math\nd = math.sqrt(2) * math.pi * math.pow(E, 2 / 3)");
-        assert_eq!(code(Lang::Mathematica, &e), "d = Sqrt[2] * Pi * E$^(2 / 3)");
+        assert_eq!(code(Lang::Rust, &e), "let d: f64 = f64::sqrt(2.0) * std::f64::consts::PI * E.cbrt().powi(2);");
+        assert_eq!(code(Lang::Python, &e), "import math\nd = math.sqrt(2) * math.pi * math.copysign(abs(E) ** (1 / 3), E)**2");
+        assert_eq!(code(Lang::Mathematica, &e), "d = Sqrt[2] * Pi * Surd[E$, 3]^2");
         assert_eq!(code(Lang::Maxima, &e), "d : sqrt(2) * %pi * E^(2 / 3);");
         let e = mul(vec![num(Num::F(1.5e-7)), sym(0)]);
         assert_eq!(code(Lang::Mathematica, &e), "d = 1.5*^-7 * a");

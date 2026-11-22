@@ -8,7 +8,8 @@ four parts:
 - [`sgweb/`](sgweb): sgweb, a web app for the same geometry, for desktops and phones, served from
   one binary
 - [`sgcli/`](sgcli): sgcli, the same geometry on the command line
-- [`sggeo/`](sggeo): sggeo, the geometry core they share, also a C library and a Wasm module
+- [`sggeo/`](sggeo): sggeo, the geometry core they share, also a C library, a Wasm module and a
+  Python module whose formulas are SymPy expressions
 
 ## sgpad
 
@@ -80,9 +81,10 @@ Building sgweb builds sggeo for the web, which needs `rustup target add wasm32-u
 ## Release builds
 
 `./build.sh` builds release binaries for every platform into `build/<platform>/<arch>/`: `bin/`
-holds sgpad and sgcli, `lib/` the sggeo C library. Windows XP gets sgcli and the sggeo DLL (sgpad for
-XP is the program in `sgpad/winxp/`), and the web the sggeo Wasm module in `lib/` and sgweb for Linux
-and Windows x64 in `bin/`. The comment at the top of
+holds sgpad and sgcli, `lib/` the sggeo C library and the sggeo Python wheel
+(`pip install sggeo-*.whl`). Windows XP gets sgcli and the sggeo DLL (sgpad for XP is the program in
+`sgpad/winxp/`), and the web the sggeo Wasm module in `lib/` and sgweb for Linux and Windows x64 in
+`bin/`. The comment at the top of
 `build.sh` lists what each platform needs; `./release.sh` packs `build/` into release archives.
 
 ## Tests
@@ -95,18 +97,21 @@ sgpad's own tests cover the app: tools, drags, undo and the formula panel. sgweb
 server and, with Node.js, the web app's tools and examples. The geometry tests
 are sggeo's: its generated tests (`sggeo/tests/gen_*.rs`) build constructions with known answers,
 derive each measured dimension, and check that the formula stays correct while the construction
-is dragged and its values changed.
+is dragged and its values changed. Each one saves its construction in `sggeo/test_examples/` when
+the file is missing (`SGGEO_WRITE_EXAMPLES=1` rewrites them all), and the `examples` test checks
+that every saved construction's formulas are exact and match its measurements.
 
-sgpad uses the library only through `sggeo::ops`, the interface the C and JS bindings wrap one
-to one, so everything the app does can also be done from C and JavaScript. Two tests keep it so:
+sgpad uses the library only through `sggeo::ops`, the interface the C, JS and Python bindings wrap
+one to one, so everything the app does can also be done from C, JavaScript and Python. Two tests keep it so:
 sgpad's `public_api` test fails when the app reaches past `sggeo::ops`, and sggeo's `parity` test
-fails when a function of `sggeo::ops` has no C or JS wrapper.
+fails when a function of `sggeo::ops` has no C, JS or Python wrapper. sggeo's `python` test builds
+the Python module and runs its tests (`sggeo/tests/python/`) when Python 3 with SymPy is installed.
 
 Formulas are drawn from their LaTeX text by [latex-rust](https://crates.io/crates/latex-rust).
 Its 3.0.3 release pins egui 0.36.2, so `vendor/latex-rust` holds a copy whose only change takes
 egui 0.37 (see its `Cargo.toml`); drop it once a release supports egui 0.37.
 
-## C and WebAssembly interfaces
+## C, WebAssembly and Python interfaces
 
 The geometry core is the `sggeo` crate, which also builds a C shared library and a Wasm module
 with JS bindings.
@@ -131,7 +136,23 @@ cargo build -p sggeo --target wasm32-unknown-unknown --release
 wasm-bindgen --target web --out-dir sggeo/pkg target/wasm32-unknown-unknown/release/sggeo.wasm
 ```
 
-Example C and JS clients live in `sggeo/examples/`. [sggeo/README.md](sggeo/README.md) describes
+The Python module (Python 3.9 or later) installs from the wheel in a release archive's `lib/`, or
+pip builds it from the repository with [maturin](https://www.maturin.rs/):
+
+```sh
+pip install './sggeo[sympy]'
+```
+
+```python
+import sggeo
+
+doc = sggeo.Doc.from_sgp(open("sggeo/tests/law_of_cosines.sgp").read())
+doc.solve()
+f = doc.derive_dim(3)
+f.sympy()  # acos((d1**2 - d2**2 + d3**2)/(2*d1*d3)), in real symbols d1, d2, d3
+```
+
+Example C, JS and Python clients live in `sggeo/examples/`. [sggeo/README.md](sggeo/README.md) describes
 the library on its own.
 
 ## Windows XP version

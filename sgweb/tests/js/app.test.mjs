@@ -5,6 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { Doc, Pad } from "./pad.mjs";
+import { codeLanguages, conKinds } from "../js/sg.js";
+import { CON_LABEL } from "../js/inspector.js";
 import { packLink, unpackLink } from "../js/files.js";
 import { actionsFor } from "../js/actions.js";
 import { settled } from "../js/formula.js";
@@ -117,4 +119,28 @@ test("every tool has an icon and a hint", () => {
     assert.ok(iconNames.includes(t.icon), `${t.id} icon ${t.icon}`);
     assert.ok(t.hint([]).length > 0 || t.id === "select", t.id);
   }
+});
+
+test("the lists the app shows cover what sggeo has", () => {
+  // a constraint of a kind without a label would show as undefined in the list of constraints
+  for (const k of conKinds()) assert.ok(CON_LABEL[k], `no label for constraint kind ${k}`);
+  // the derivation worker writes every language, and the inspector offers each one by its label
+  const langs = codeLanguages();
+  assert.ok(langs.some(([name, label]) => name === "sympy" && label === "SymPy"), JSON.stringify(langs));
+  const d = Doc.fromSgp(readFileSync(new URL("01-ptolemy.sgp", dir), "utf8"));
+  d.solve();
+  const f = d.deriveDim([...Array(d.dimCount).keys()].find((i) => !d.dimDriving(i)));
+  for (const [name] of langs) assert.ok(f.code(name), name);
+  f.free();
+  d.free();
+});
+
+test("a formula tells the condition its construction is at the limit of", () => {
+  // at a = b the focus distance holds only where b ≥ a; the inspector shows it under the formula
+  const d = Doc.fromSgp(readFileSync(new URL("conics/ellipse_degenerate_circle_focus.sgp", dir), "utf8"));
+  d.solve();
+  const f = d.deriveDim(3);
+  assert.deepEqual(f.limits.map((l) => l.plain), ["b1^2 - a1^2 ≥ 0"]);
+  f.free();
+  d.free();
 });

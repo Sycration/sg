@@ -44,22 +44,39 @@ pub struct Formula {
     pub defs: Vec<Def>,
     /// Complexity of the formula: its number of operations and terms.
     pub size: usize,
+    /// The conditions for the formula to hold that the construction meets
+    /// only just: a radicand of a square root that is 0 here (`b1^2 - a1^2 ≥
+    /// 0`), an argument of `acos` or `asin` that is ±1, an argument of `ln`
+    /// that is 0. A little way past such a condition the formula has no value
+    /// or another branch holds. Usually none.
+    pub limits: Vec<Limit>,
     src: ops::Formula,
 }
 
 #[wasm_bindgen]
 impl Formula {
     /// The formula as source code in language `lang`: "c", "rust", "js",
-    /// "python", "mathematica" or "maxima". Statements assign the repeated
+    /// "python", "mathematica", "maxima" or "sympy". Statements assign the repeated
     /// subexpressions of the formula to temporaries `u_1`, `u_2`, ... and
     /// then the formula to a variable named after the target, one per line,
     /// reading the other quantities from variables of their names (names
     /// are made into identifiers of the language, Greek letters spelled
     /// out). Angles are in radians. C needs `<math.h>`; the Python code
-    /// imports `math` when it uses it.
+    /// imports `math` when it uses it. The SymPy code declares the other
+    /// quantities as real symbols, so the target holds a SymPy expression.
     pub fn code(&self, lang: &str) -> Result<String, JsError> {
         Ok(ops::formula_code(&self.src, Lang::from_name(lang).map_err(js)?))
     }
+}
+
+/// A condition of a formula (see `Formula.limits`).
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Clone)]
+pub struct Limit {
+    /// As plain text, such as `b1^2 - a1^2 ≥ 0`.
+    pub plain: String,
+    /// As LaTeX.
+    pub latex: String,
 }
 
 /// A subexpression of a formula.
@@ -118,6 +135,15 @@ impl JsDoc {
     #[wasm_bindgen(js_name = toSgp)]
     pub fn to_sgp(&self) -> Result<String, JsError> {
         ops::to_sgp(&self.doc).map_err(js)
+    }
+
+    /// The construction drawn as an SVG picture of `width` × `height` pixels
+    /// (16 to 4096 each): its curves, its points with their names, and each
+    /// dimension as `name = value` at its label (driving ones purple, measured
+    /// ones green, angles in degrees), scaled to fit, with the axes in grey.
+    #[wasm_bindgen(js_name = toSvg)]
+    pub fn to_svg(&self, width: f64, height: f64) -> Result<String, JsError> {
+        ops::to_svg(&self.doc, width, height).map_err(js)
     }
 
     /// Solves the constraints and stores the solution in the document.
@@ -772,6 +798,17 @@ impl JsDoc {
         ops::dim_value(&self.doc, i).unwrap_or(f64::NAN)
     }
 
+    /// How precisely the measured value of dimension `i` (`dimValue`) is
+    /// known: about how far it can be from the exact value of the
+    /// construction. Near 1e-13 of the value where the construction is
+    /// regular; at a double root (the foci of an ellipse with a = b) about the
+    /// square root of that. A display can round the value to it. NaN for an
+    /// empty slot or a bad index.
+    #[wasm_bindgen(js_name = dimUncertainty)]
+    pub fn dim_uncertainty(&self, i: usize) -> f64 {
+        ops::dim_uncertainty(&self.doc, i).unwrap_or(f64::NAN)
+    }
+
     /// True when dimension `i` is driving, false when it is a reference dimension.
     #[wasm_bindgen(js_name = dimDriving)]
     pub fn dim_driving(&self, i: usize) -> Result<bool, JsError> {
@@ -861,7 +898,9 @@ impl JsDoc {
         ops::var_name(&self.doc, i).ok()
     }
 
-    /// Value of variable `i`; NaN for an empty slot or a bad index.
+    /// Value of variable `i` (the value of its expression for a defined
+    /// variable); NaN for an empty slot, a bad index or an expression that
+    /// does not parse.
     #[wasm_bindgen(js_name = varValue)]
     pub fn var_value(&self, i: usize) -> f64 {
         ops::var_value(&self.doc, i).unwrap_or(f64::NAN)
@@ -1089,6 +1128,7 @@ impl JsDoc {
             latex: f.latex,
             latex_short: f.latex_short,
             defs: f.defs.into_iter().map(|(n, l)| Def { name: n, latex: l }).collect(),
+            limits: f.limits.into_iter().map(|(p, l)| Limit { plain: p, latex: l }).collect(),
             exact: f.exact,
             is_angle: f.is_angle,
             value: f.value,
@@ -1129,6 +1169,36 @@ impl Cancel {
 pub fn latex_png(latex: &str, size_pt: f64, dpi: f64, rgb: u32) -> Result<Vec<u8>, JsError> {
     let [_, r, g, b] = rgb.to_be_bytes();
     ops::latex_png(latex, size_pt, dpi, [r, g, b]).map_err(js)
+}
+
+/// The languages of `Formula.code`, in the order of their numbers in C: each
+/// as `[name, label]`, the name `code` takes and the name to show (`["js",
+/// "JavaScript"]`). A client lists them from here, so a language added to
+/// sggeo reaches its menus.
+#[wasm_bindgen(js_name = codeLanguages)]
+pub fn code_languages() -> js_sys::Array {
+    ops::code_languages().into_iter().map(|(n, l)| js_sys::Array::of2(&n.into(), &l.into())).collect()
+}
+
+/// The kinds of constraint by name (as `constrain` and `conKind` have them),
+/// in the order of their numbers in C.
+#[wasm_bindgen(js_name = conKinds)]
+pub fn con_kinds() -> Vec<String> {
+    ops::con_kinds().into_iter().map(String::from).collect()
+}
+
+/// The kinds of dimension by name (as `addDim` and `dimKind` have them), in
+/// the order of their numbers in C.
+#[wasm_bindgen(js_name = dimKinds)]
+pub fn dim_kinds() -> Vec<String> {
+    ops::dim_kinds().into_iter().map(String::from).collect()
+}
+
+/// The kinds of entity by name (as `entKind` has them), in the order of
+/// their numbers in C.
+#[wasm_bindgen(js_name = entKinds)]
+pub fn ent_kinds() -> Vec<String> {
+    ops::ent_kinds().into_iter().map(String::from).collect()
 }
 
 /// Version of the library.

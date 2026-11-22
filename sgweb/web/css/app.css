@@ -949,11 +949,17 @@ input.bad,
   margin-top: 12px;
 }
 
-.pane > .error {
+.pane > .error,
+.pane > .limit {
   display: flex;
   gap: 6px;
   align-items: flex-start;
   font-size: 13px;
+}
+
+/* a condition of the formula that the construction is at the limit of */
+.pane > .limit {
+  color: var(--warn);
 }
 
 .qsec + .qsec {

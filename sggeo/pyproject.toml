@@ -1,0 +1,33 @@
+# The Python module sggeo: the crate built with its `python` feature by maturin.
+#
+#   pip install ./sggeo              # builds and installs it (Rust and Python 3.9 or later)
+#   maturin develop -r               # in this directory, into the active virtual environment
+#   maturin build -r                 # a wheel in ../target/wheels, for Python 3.9 and later
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sggeo"
+description = "Geometry with constraints that gives closed-form formulas for what you measure, as SymPy expressions"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Repository = "https://github.com/Sycration/sg"
+Documentation = "https://github.com/Sycration/sg/blob/main/sggeo/README.md"
+
+[project.optional-dependencies]
+# Formula.sympy and SymPy expressions as arguments
+sympy = ["sympy>=1.12"]
+
+[tool.maturin]
+features = ["python"]
+module-name = "sggeo"

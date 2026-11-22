@@ -248,12 +248,19 @@ export class App {
     this.request();
   }
 
-  /** Text of the value editor of dimension `i`: its expression, or its value (degrees for angles). */
+  /** Text of the value editor of dimension `i`: its expression, or its value (degrees for angles), a
+   *  measured one to the digits the construction determines (see `dimUncertainty`). */
   dimEditText(i) {
     const expr = this.doc.dimExpr(i);
     if (expr) return expr;
     let v = this.doc.dimSetValue(i);
-    if (this.doc.dimKind(i) === "angle") v = (v * 180) / Math.PI;
+    let u = this.doc.dimDriving(i) ? 0 : this.doc.dimUncertainty(i);
+    if (this.doc.dimKind(i) === "angle") [v, u] = [(v * 180) / Math.PI, (u * 180) / Math.PI];
+    if (u > 0 && Number.isFinite(u)) {
+      // by the power of ten that is exact: 10^7 and not 10^-7
+      const k = Math.floor(Math.log10(u));
+      v = k < 0 ? Math.round(v * 10 ** -k) / 10 ** -k : Math.round(v / 10 ** k) * 10 ** k;
+    }
     return String(+v.toPrecision(10));
   }
 

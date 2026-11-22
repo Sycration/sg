@@ -7,7 +7,7 @@ given
   point A
     y_A: y(A) = 0
   k1 = circle(A)
-    k1 tan e1 near (5, -5.029528083045915e-166)
+    k1 tan e1 near (5, -1.2718727585707154e-167)
     r1: r(k1) = 1
 
 find
@@ -15,7 +15,7 @@ find
 
 where
   e1 a 5 b 3 angle 0° [fixed angle]
-  A (4, -1.1725076993073783e-166)
+  A (4, 0)
   k1 r 1
   a1 label (0.3, 0.3)
   b1 label (0.3, 0.3)

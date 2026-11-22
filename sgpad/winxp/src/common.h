@@ -253,6 +253,8 @@ void pane_search_longer();
 bool pane_has_formula();
 void pane_copy_formula(bool latex);
 void pane_copy_code(SgLang lang);
+const std::vector<wstr> &lang_labels();
+void fill_code_menu(HMENU m);
 void pane_copy_picture();
 void pane_save_picture();
 void pane_layout();

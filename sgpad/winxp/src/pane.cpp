@@ -29,7 +29,8 @@ struct Formula {
     wstr name, plain, err;
     std::string latex;
     std::vector<std::string> rows;  // `name = formula` with u_k, then u_k = ...
-    wstr code[SG_LANG_MAXIMA + 1];  // the formula as code, by SG_LANG_*
+    std::vector<wstr> code;  // the formula as code, by SG_LANG_*
+    std::vector<wstr> limits;  // the conditions of the formula the construction is at the limit of
     bool exact, is_angle;
     double value, actual;
     size_t size;
@@ -178,6 +179,18 @@ void update_formula_scroll() {
     SetScrollInfo(view, SB_VERT, &si, TRUE);
 }
 
+// The height the text of the state line takes at width `w`: one to three lines.
+int state_height(int w) {
+    HDC dc = GetDC(state);
+    HGDIOBJ old = SelectObject(dc, (HFONT)SendMessage(state, WM_GETFONT, 0, 0));
+    RECT r = {0, 0, w, 0};
+    wstr t = window_text(state);
+    DrawTextW(dc, t.c_str(), -1, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, old);
+    ReleaseDC(state, dc);
+    return r.bottom < 16 ? 16 : r.bottom > 48 ? 48 : r.bottom;
+}
+
 void show_state() {
     bool busy = job != 0;
     SendMessage(progress, PBM_SETMARQUEE, busy, 40);
@@ -206,12 +219,18 @@ void show_state() {
         else st = L"Approximate: no exact formula was found.";
         if (shown.err.empty() && finite(shown.value) && !(fabs(shown.value - shown.actual) <= 1e-6 * (1 + fabs(shown.actual))))
             st += L" The formula gives " + fmt_val(shown.value) + L".";
+        for (size_t k = 0; shown.err.empty() && k < shown.limits.size(); k++)
+            st += L" Only where " + shown.limits[k] + L"; this construction is at that limit.";
     } else {
         head = (t.kind == Sel::DIM ? geo::dim_name(app.doc, t.i) : geo::var_name(app.doc, t.i));
         st = busy ? L"Finding the formula..." : L"";
     }
     SetWindowTextW(text, head.c_str());
     SetWindowTextW(state, st.c_str());
+    // a longer state (a limit of the formula) takes more lines from the formula above it
+    RECT sr;
+    GetClientRect(state, &sr);
+    if (sr.bottom != state_height(sr.right)) pane_layout();
     bool f = shown.valid && shown.err.empty() && !shown.rows.empty();
     EnableWindow(btn_copy, f);
     EnableWindow(btn_copy_as, f);
@@ -263,7 +282,8 @@ void take_result(Job *j) {
         f.latex = g->latex;
         f.rows.push_back(g->latex_short);
         for (size_t k = 0; k < g->n_defs; k++) f.rows.push_back(std::string(g->defs[k].name) + " = " + g->defs[k].latex);
-        for (SgLang l = 0; l <= SG_LANG_MAXIMA; l++) f.code[l] = take(sg_formula_code(g, l));
+        for (SgLang l = 0; l < lang_labels().size(); l++) f.code.push_back(take(sg_formula_code(g, l)));
+        for (size_t k = 0; k < g->n_limits; k++) f.limits.push_back(widen(g->limits[k].plain));
         f.exact = g->exact;
         f.is_angle = g->is_angle;
         f.value = g->value;
@@ -291,14 +311,47 @@ void take_result(Job *j) {
     }
 }
 
-// the languages of sg_formula_code, by SG_LANG_*
-const wchar_t *lang_names[] = {L"C", L"Rust", L"JavaScript", L"Python", L"Mathematica", L"Maxima"};
-const wchar_t *lang_labels[] = {L"&C", L"&Rust", L"&JavaScript", L"&Python", L"&Mathematica", L"Ma&xima"};
+} // namespace
 
-// A menu of the languages, with the commands ID_EDIT_COPY_C to ID_EDIT_COPY_MAXIMA.
+// The names to show of the languages of sg_formula_code, by SG_LANG_*, as sggeo lists them (as many as
+// the commands from ID_EDIT_COPY_CODE to ID_EDIT_COPY_CODE_LAST).
+const std::vector<wstr> &lang_labels() {
+    static std::vector<wstr> labels;
+    if (labels.empty()) {
+        for (SgLang l = 0; l <= ID_EDIT_COPY_CODE_LAST - ID_EDIT_COPY_CODE; l++) {
+            char *s = sg_lang_label(l);
+            if (!s) break;
+            labels.push_back(take(s));
+        }
+    }
+    return labels;
+}
+
+// Appends the languages to menu `m`, with the commands ID_EDIT_COPY_CODE + SG_LANG_*. Each one's access key
+// is the first letter of its name that no language before it has: &C, &Rust, ..., &Mathematica, M&axima.
+void fill_code_menu(HMENU m) {
+    const std::vector<wstr> &names = lang_labels();
+    wstr used;
+    for (size_t l = 0; l < names.size(); l++) {
+        wstr s = names[l];
+        for (size_t i = 0; i < s.size(); i++) {
+            wchar_t c = (wchar_t)(UINT_PTR)CharLowerW((LPWSTR)(UINT_PTR)s[i]);
+            if (IsCharAlphaW(c) && used.find(c) == wstr::npos) {
+                used += c;
+                s.insert(i, L"&");
+                break;
+            }
+        }
+        AppendMenuW(m, MF_STRING, ID_EDIT_COPY_CODE + l, s.c_str());
+    }
+}
+
+namespace {
+
+// A menu of the languages (fill_code_menu).
 HMENU code_menu() {
     HMENU m = CreatePopupMenu();
-    for (SgLang l = 0; l <= SG_LANG_MAXIMA; l++) AppendMenuW(m, MF_STRING, ID_EDIT_COPY_C + l, lang_labels[l]);
+    fill_code_menu(m);
     return m;
 }
 
@@ -715,7 +768,7 @@ void pane_layout() {
     MoveWindow(text, ix, y, iw, 16, TRUE);
     y += 20;
     int bottom = H - m - 8;
-    int sy = bottom - 16, rowy = sy - gap - bh;
+    int sh = state_height(iw), sy = bottom - sh, rowy = sy - gap - bh;
     MoveWindow(view, ix, y, iw, rowy - gap - y > 20 ? rowy - gap - y : 20, TRUE);
     int b1 = 60, b2 = 84, b3 = 96;
     MoveWindow(btn_copy, ix, rowy, b1, bh, TRUE);
@@ -724,7 +777,7 @@ void pane_layout() {
     // the moving bar shows a running search next to the buttons
     int px = ix + b1 + b2 + b3 + 3 * gap + 2;
     MoveWindow(progress, px, rowy + 5, ix + iw - px > 90 ? 90 : ix + iw - px, 13, TRUE);
-    MoveWindow(state, ix, sy, iw, 16, TRUE);
+    MoveWindow(state, ix, sy, iw, sh, TRUE);
 }
 
 void pane_refresh() {
@@ -802,7 +855,7 @@ void pane_copy_formula(bool latex) {
 }
 
 void pane_copy_code(SgLang lang) {
-    if (!pane_has_formula() || lang > SG_LANG_MAXIMA || shown.code[lang].empty()) return;
+    if (!pane_has_formula() || lang >= shown.code.size() || shown.code[lang].empty()) return;
     // the Clipboard holds lines ending in CR LF
     wstr s;
     for (size_t k = 0; k < shown.code[lang].size(); k++) {
@@ -810,7 +863,7 @@ void pane_copy_code(SgLang lang) {
         s += shown.code[lang][k];
     }
     clip_text(s);
-    set_status(L"The formula was copied as " + wstr(lang_names[lang]) + L" code.");
+    set_status(L"The formula was copied as " + lang_labels()[lang] + L" code.");
 }
 
 void pane_copy_picture() {

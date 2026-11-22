@@ -5,9 +5,9 @@
 // curve. The library's constructions take points, so a change first creates the points its places need.
 // `change` makes all of that one undoable step, and leaves no trace when the library rejects it.
 
-import init, { Doc, latexPng, version } from "../pkg/sggeo.js";
+import init, { Doc, codeLanguages, conKinds, latexPng, version } from "../pkg/sggeo.js";
 
-export { Doc, latexPng, version };
+export { Doc, codeLanguages, conKinds, latexPng, version };
 
 /** The compiled module, which workers instantiate again. */
 export let wasmModule = null;

@@ -92,13 +92,9 @@
 #define ID_EDIT_DELETE          40027
 #define ID_EDIT_SELECT_ALL      40028
 #define ID_EDIT_PROPERTIES      40029
-// the languages of Copy Formula as Code, in the order of SG_LANG_*
-#define ID_EDIT_COPY_C          40031
-#define ID_EDIT_COPY_RUST       40032
-#define ID_EDIT_COPY_JS         40033
-#define ID_EDIT_COPY_PYTHON     40034
-#define ID_EDIT_COPY_MATHEMATICA 40035
-#define ID_EDIT_COPY_MAXIMA     40036
+// Copy Formula as Code: ID_EDIT_COPY_CODE + SG_LANG_*, for each language sggeo lists (sg_lang_label)
+#define ID_EDIT_COPY_CODE       40500
+#define ID_EDIT_COPY_CODE_LAST  40531
 
 #define ID_VIEW_TOOLBAR         40041
 #define ID_VIEW_CONBAR          40042

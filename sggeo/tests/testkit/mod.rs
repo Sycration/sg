@@ -16,8 +16,10 @@
 //!
 //! When a `Kit` is dropped at the end of a test, its construction is saved
 //! as an example file `test_examples/<test file>/<test name>.sgp` (the app's
-//! own file format), overwriting the previous version, so every test run
-//! regenerates the examples.
+//! own file format) if there is none yet. With `SGGEO_WRITE_EXAMPLES=1` the
+//! test run writes every example again, overwriting the previous versions;
+//! otherwise the files stay as they are, so a change to the solver or a test
+//! does not rewrite hundreds of them. `tests/examples.rs` checks the files.
 
 #![allow(dead_code)]
 
@@ -91,6 +93,9 @@ fn example_path() -> Option<std::path::PathBuf> {
 impl Drop for Kit {
     fn drop(&mut self) {
         let Some(path) = example_path() else { return };
+        if path.exists() && std::env::var_os("SGGEO_WRITE_EXAMPLES").is_none_or(|v| v != "1") {
+            return;
+        }
         let text = sggeo::sgp::to_string(&self.sk().doc);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

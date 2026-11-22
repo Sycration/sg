@@ -25,6 +25,8 @@ fn derive_through_c_interface() {
         assert_eq!(text((*f).plain), "θ1 = acos((d1^2 + d3^2 - d2^2)/(2d1*d3))");
         assert!((*f).exact && (*f).is_angle);
         assert!(((*f).value - sg_doc_dim_value(doc, 3)).abs() < 1e-9);
+        // a regular construction: the measurement is known to rounding
+        assert!(sg_doc_dim_uncertainty(doc, 3) < 1e-11);
         for (lang, want) in [
             (SG_LANG_C, "double theta1 = acos((pow(d1, 2.0) + pow(d3, 2.0) - pow(d2, 2.0)) / (2.0 * d1 * d3));"),
             (SG_LANG_RUST, "let theta1: f64 = ((d1.powi(2) + d3.powi(2) - d2.powi(2)) / (2.0 * d1 * d3)).acos();"),
@@ -32,13 +34,17 @@ fn derive_through_c_interface() {
             (SG_LANG_PYTHON, "import math\ntheta1 = math.acos((d1**2 + d3**2 - d2**2) / (2 * d1 * d3))"),
             (SG_LANG_MATHEMATICA, "θ1 = ArcCos[(d1^2 + d3^2 - d2^2) / (2 * d1 * d3)]"),
             (SG_LANG_MAXIMA, "theta1 : acos((d1^2 + d3^2 - d2^2) / (2 * d1 * d3));"),
+            (
+                SG_LANG_SYMPY,
+                "import sympy\nd1, d2, d3 = sympy.symbols(\"d1 d2 d3\", real=True)\ntheta1 = sympy.acos((d1**2 + d3**2 - d2**2) / (2 * d1 * d3))",
+            ),
         ] {
             let code = sg_formula_code(f, lang);
             assert_eq!(text(code), want);
             sg_string_free(code);
         }
-        assert!(sg_formula_code(f, 6).is_null());
-        assert_eq!(text(sg_last_error()), "unknown language 6");
+        assert!(sg_formula_code(f, 7).is_null());
+        assert_eq!(text(sg_last_error()), "unknown language 7");
         sg_formula_free(f);
 
         // round trip through .sgp text
@@ -63,6 +69,7 @@ fn errors_are_reported() {
         let doc = sg_doc_new();
         assert!(sg_doc_dim_name(doc, 0).is_null());
         assert!(sg_doc_dim_value(doc, 0).is_nan());
+        assert!(sg_doc_dim_uncertainty(doc, 0).is_nan());
         assert!(sg_derive(doc, SG_TARGET_DIM, 0, 0, std::ptr::null()).is_null());
         assert_eq!(text(sg_last_error()), "gone");
         assert!(sg_derive(doc, 7, 0, 0, std::ptr::null()).is_null());
@@ -171,9 +178,12 @@ fn edit_variables() {
         let e = sg_doc_var_expr(doc, 1);
         assert_eq!(text(e), "2a");
         sg_string_free(e);
+        // a defined variable has the value of its expression
+        assert_eq!(sg_doc_var_value(doc, 1), 10.0);
         assert_eq!(sg_doc_set_var_free(doc, 1, true), -1);
         assert_eq!(sg_doc_set_var(doc, 1, 1.0), -1);
         assert_eq!(sg_doc_set_var_expr(doc, 1, c"a+1".as_ptr()), 1);
+        assert_eq!(sg_doc_var_value(doc, 1), 6.0);
         assert_eq!(sg_doc_set_var_expr(doc, 1, c"zz+".as_ptr()), -1);
 
         // a plain number turns a defined variable into a free value variable
@@ -520,5 +530,74 @@ fn latex_png_through_c_interface() {
         assert!(sg_latex_png(latex.as_ptr(), 12.0, 96.0, 0, std::ptr::null_mut()).is_null());
         assert_eq!(text(sg_last_error()), "null length");
         sg_bytes_free(std::ptr::null_mut(), 0);
+    }
+}
+
+/// The names `f` gives from 0 until NULL, each released.
+fn names(f: extern "C" fn(u32) -> *mut std::ffi::c_char) -> Vec<String> {
+    let mut v = Vec::new();
+    loop {
+        let p = f(v.len() as u32);
+        if p.is_null() {
+            return v;
+        }
+        v.push(text(p));
+        unsafe { sg_string_free(p) };
+    }
+}
+
+#[test]
+fn languages_and_kinds_are_listed() {
+    let langs = names(sg_lang_name);
+    assert_eq!(langs, ["c", "rust", "js", "python", "mathematica", "maxima", "sympy"]);
+    assert_eq!(names(sg_lang_label)[SG_LANG_JS as usize], "JavaScript");
+    assert_eq!(names(sg_lang_label)[SG_LANG_SYMPY as usize], "SymPy");
+    // the names are those of the constants' numbers
+    let cons = names(sg_con_kind_name);
+    assert_eq!(cons.len(), SG_CON_ASYMPTOTE as usize + 1);
+    assert_eq!((cons[SG_CON_ON_CURVE as usize].as_str(), cons[SG_CON_TANGENT_AT as usize].as_str()), ("on_curve", "tangent_at"));
+    let dims = names(sg_dim_kind_name);
+    assert_eq!(dims.len(), SG_DIM_Y as usize + 1);
+    assert_eq!((dims[SG_DIM_POINT_LINE as usize].as_str(), dims[SG_DIM_X as usize].as_str()), ("point_line", "x"));
+    assert_eq!(names(sg_ent_kind_name), ["point", "line", "circle", "arc", "conic", "curve"]);
+}
+
+#[test]
+fn svg_through_c_interface() {
+    unsafe {
+        let src = CString::new(include_str!("law_of_cosines.sgp")).unwrap();
+        let doc = sg_doc_from_sgp(src.as_ptr());
+        assert_eq!(sg_doc_solve(doc, std::ptr::null_mut()), 1);
+        let svg = sg_doc_to_svg(doc, 320.0, 240.0);
+        let s = text(svg);
+        sg_string_free(svg);
+        assert!(s.starts_with("<svg ") && s.ends_with("</svg>") && s.contains("d1 = 5"), "{s}");
+        assert!(sg_doc_to_svg(doc, 5.0, 5.0).is_null());
+        sg_doc_free(doc);
+    }
+}
+
+#[test]
+fn limits_through_c_interface() {
+    unsafe {
+        // at a = b the focus distance holds only on one side: where b ≥ a
+        let src = CString::new(include_str!("../test_examples/gen_conics/ellipse_degenerate_circle_focus.sgp")).unwrap();
+        let doc = sg_doc_from_sgp(src.as_ptr());
+        assert_eq!(sg_doc_solve(doc, std::ptr::null_mut()), 1);
+        let f = sg_derive(doc, SG_TARGET_DIM, 3, 0, std::ptr::null());
+        assert!(!f.is_null());
+        assert_eq!((*f).n_limits, 1);
+        assert_eq!(text((*(*f).limits).plain), "b1^2 - a1^2 ≥ 0");
+        assert_eq!(text((*(*f).limits).latex), "{b_{1}}^{2} - {a_{1}}^{2} \\geq 0");
+        sg_formula_free(f);
+        sg_doc_free(doc);
+        // a regular construction has none
+        let src = CString::new(include_str!("law_of_cosines.sgp")).unwrap();
+        let doc = sg_doc_from_sgp(src.as_ptr());
+        assert_eq!(sg_doc_solve(doc, std::ptr::null_mut()), 1);
+        let f = sg_derive(doc, SG_TARGET_DIM, 3, 0, std::ptr::null());
+        assert_eq!((*f).n_limits, 0);
+        sg_formula_free(f);
+        sg_doc_free(doc);
     }
 }
